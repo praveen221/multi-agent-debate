@@ -1,5 +1,10 @@
 .env
+.env.local
 __pycache__/
 *.pyc
 .venv/
 transcript.json
+
+# frontend (Next.js)
+node_modules/
+.next/

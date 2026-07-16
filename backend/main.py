@@ -3,36 +3,13 @@ import json
 import questionary
 from dotenv import load_dotenv
 
+import agent_factory
 import debate
 import models
-import tools
-from agent import Agent
 
 load_dotenv()
 
 DEFAULT_TOPIC = "Can a debate and discussion between multiple models and agents lead to better and more factually correct research rather than using one model, basically the MAD multi agent debate systems used in RL training more recently can they become consumer facing tools?"
-
-BASE_PERSONA = (
-    "You are a thoughtful, honest participant in a discussion. You will be given "
-    "a topic and, as the conversation goes on, your own past replies and the other "
-    "participants' replies — messages from other participants are labeled with "
-    "their name. When it's your turn, share your genuine perspective on the topic "
-    "so far — agree, disagree, add nuance, or build on what's already been said. "
-    "You are not assigned a side and don't need to defend a fixed position; let "
-    "your view evolve naturally as the discussion progresses. Keep responses to "
-    "2-4 sentences."
-)
-
-
-def make_tool_executor(agent_name):
-    def tool_executor(name, args):
-        if name == "web_search":
-            query = args.get("query", "")
-            print(f"[{agent_name} searching: '{query}']")
-            return tools.web_search(query, args.get("max_results", 5))
-        raise ValueError(f"Unknown tool: {name}")
-
-    return tool_executor
 
 
 def pick_model(model_ids):
@@ -73,22 +50,9 @@ def setup_agents():
             f"Give {name} the web_search tool?", default=False
         ).ask()
 
-        persona = f"You are {name}. " + BASE_PERSONA
-        agent_tools = None
-        tool_executor = None
-        if wants_search:
-            persona += " Use the web_search tool when it would help ground a claim in real evidence."
-            agent_tools = [tools.WEB_SEARCH_TOOL]
-            tool_executor = make_tool_executor(name)
-
         agents.append(
-            Agent(
-                name=name,
-                model=model,
-                provider="openrouter",
-                persona=persona,
-                tools=agent_tools,
-                tool_executor=tool_executor,
+            agent_factory.build_agent(
+                {"name": name, "model": model, "use_search": wants_search}
             )
         )
 

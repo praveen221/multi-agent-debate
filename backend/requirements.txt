@@ -2,3 +2,6 @@ openai
 python-dotenv
 ddgs
 questionary
+fastapi
+uvicorn[standard]
+supabase

@@ -1,4 +1,4 @@
-def _build_messages(agent, transcript, topic):
+def build_messages(agent, transcript, topic):
     messages = [{"role": "user", "content": f"The debate topic is: {topic}"}]
 
     if not transcript:
@@ -21,7 +21,7 @@ def run(agents: list, topic: str):
     i = 0
     while True:
         agent = agents[i % len(agents)]
-        messages = _build_messages(agent, transcript, topic)
+        messages = build_messages(agent, transcript, topic)
         text = agent.respond(messages)
         turn = {"speaker": agent.name, "text": text}
         transcript.append(turn)
