@@ -24,3 +24,13 @@ class Agent:
             tools=self.tools,
             tool_executor=self.tool_executor,
         )
+
+    def respond_streaming(self, messages: list[dict]):
+        return client_module.complete_streaming(
+            self._client,
+            self.model,
+            self.persona,
+            messages,
+            tools=self.tools,
+            tool_executor=self.tool_executor,
+        )

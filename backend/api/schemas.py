@@ -10,9 +10,3 @@ class AgentConfig(BaseModel):
 class CreateSessionRequest(BaseModel):
     topic: str
     agents: list[AgentConfig]
-
-
-class TurnResponse(BaseModel):
-    turn_index: int
-    speaker: str
-    text: str

@@ -26,6 +26,19 @@ async function apiFetch(path: string, init: RequestInit = {}) {
 export type AgentDraft = { name: string; model: string; use_search: boolean };
 export type Turn = { turn_index: number; speaker: string; text: string };
 export type ModelInfo = { id: string; pricing: Record<string, string> };
+export type SessionSummary = {
+  session_id: string;
+  topic: string;
+  status: string;
+  created_at: string;
+};
+export type SessionDetail = {
+  session: { id: string; topic: string; status: string; agents: AgentDraft[] };
+  turns: Turn[];
+};
+export type StreamEvent =
+  | { type: "search"; query: string }
+  | { type: "turn"; turn_index: number; speaker: string; text: string };
 
 export function listModels(): Promise<ModelInfo[]> {
   return apiFetch("/api/models");
@@ -38,10 +51,45 @@ export function createSession(topic: string, agents: AgentDraft[]) {
   }) as Promise<{ session_id: string; topic: string; agents: AgentDraft[] }>;
 }
 
-export function nextTurn(sessionId: string): Promise<Turn> {
-  return apiFetch(`/api/sessions/${sessionId}/next`, { method: "POST" });
+export function listSessions(): Promise<SessionSummary[]> {
+  return apiFetch("/api/sessions");
+}
+
+export function getSession(sessionId: string): Promise<SessionDetail> {
+  return apiFetch(`/api/sessions/${sessionId}`);
 }
 
 export function endSession(sessionId: string) {
   return apiFetch(`/api/sessions/${sessionId}/end`, { method: "POST" });
+}
+
+export async function nextTurnStream(
+  sessionId: string,
+  onEvent: (event: StreamEvent) => void,
+) {
+  const headers = { "Content-Type": "application/json", ...(await authHeader()) };
+  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/next`, {
+    method: "POST",
+    headers,
+  });
+
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed: ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) onEvent(JSON.parse(line) as StreamEvent);
+    }
+  }
 }

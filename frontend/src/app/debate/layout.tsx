@@ -1,0 +1,89 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
+import { listSessions, type SessionSummary } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/theme-toggle";
+
+export default function DebateLayout({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [checking, setChecking] = useState(true);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      if (!data.user) {
+        router.replace("/");
+        return;
+      }
+      setChecking(false);
+    });
+  }, [router]);
+
+  useEffect(() => {
+    if (checking) return;
+    listSessions()
+      .then(setSessions)
+      .catch(() => {});
+  }, [checking, pathname]);
+
+  async function handleSignOut() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.replace("/");
+  }
+
+  if (checking) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
+        Loading…
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen">
+      <aside className="flex w-64 shrink-0 flex-col border-r p-4">
+        <Button className="mb-4 w-full" onClick={() => router.push("/debate")}>
+          + New debate
+        </Button>
+
+        <div className="flex-1 space-y-1 overflow-y-auto">
+          {sessions.length === 0 && (
+            <p className="px-2 text-xs text-muted-foreground">No past debates yet.</p>
+          )}
+          {sessions.map((s) => {
+            const href = `/debate/${s.session_id}`;
+            const active = pathname === href;
+            return (
+              <Link
+                key={s.session_id}
+                href={href}
+                title={s.topic}
+                className={`block truncate rounded px-2 py-1.5 text-sm hover:bg-muted ${
+                  active ? "bg-muted font-medium" : "text-muted-foreground"
+                }`}
+              >
+                {s.topic || s.session_id}
+              </Link>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between border-t pt-4">
+          <Button variant="ghost" size="sm" onClick={handleSignOut}>
+            Sign out
+          </Button>
+          <ThemeToggle />
+        </div>
+      </aside>
+
+      <div className="flex-1 overflow-y-auto">{children}</div>
+    </div>
+  );
+}

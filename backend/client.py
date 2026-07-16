@@ -54,3 +54,43 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
     # hasn't responded to those results yet. Force one final answer, no more tools.
     response = client.chat.completions.create(model=model, messages=full_messages)
     return response.choices[0].message.content
+
+
+def complete_streaming(client, model, system_prompt, messages, tools=None, tool_executor=None):
+    """Same tool loop as complete(), but yields progress along the way:
+    {"type": "tool_call", "name", "args"} for each tool call, then finally
+    {"type": "text", "text"}. Lets a caller (e.g. a web API) report live
+    progress instead of only seeing the final answer."""
+    full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
+
+    if not tools:
+        response = client.chat.completions.create(model=model, messages=full_messages)
+        yield {"type": "text", "text": response.choices[0].message.content}
+        return
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        response = client.chat.completions.create(
+            model=model, messages=full_messages, tools=tools
+        )
+        message = response.choices[0].message
+
+        if not message.tool_calls:
+            yield {"type": "text", "text": message.content}
+            return
+
+        full_messages.append(message.model_dump(exclude_unset=True))
+
+        for tool_call in message.tool_calls:
+            args = json.loads(tool_call.function.arguments)
+            yield {"type": "tool_call", "name": tool_call.function.name, "args": args}
+            result = tool_executor(tool_call.function.name, args)
+            full_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result),
+                }
+            )
+
+    response = client.chat.completions.create(model=model, messages=full_messages)
+    yield {"type": "text", "text": response.choices[0].message.content}

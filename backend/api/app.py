@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 import agent_factory
 import models as models_module
@@ -15,7 +17,7 @@ from debate import build_messages
 from api.auth import get_current_user_id
 from api.db import get_db
 from api.rate_limit import check_and_increment
-from api.schemas import CreateSessionRequest, TurnResponse
+from api.schemas import CreateSessionRequest
 
 app = FastAPI(title="Multi-Agent Debate API")
 
@@ -60,6 +62,28 @@ def create_session(body: CreateSessionRequest, user_id: str = Depends(get_curren
     return {"session_id": session["id"], "topic": session["topic"], "agents": session["agents"]}
 
 
+@app.get("/api/sessions")
+def list_sessions(user_id: str = Depends(get_current_user_id)):
+    db = get_db()
+    rows = (
+        db.table("mad_sessions")
+        .select("id, topic, status, created_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    return [
+        {
+            "session_id": r["id"],
+            "topic": r["topic"],
+            "status": r["status"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
 def _load_session(session_id: str, user_id: str) -> dict:
     db = get_db()
     result = db.table("mad_sessions").select("*").eq("id", session_id).maybe_single().execute()
@@ -86,7 +110,7 @@ def get_session(session_id: str, user_id: str = Depends(get_current_user_id)):
     return {"session": session, "turns": turns}
 
 
-@app.post("/api/sessions/{session_id}/next", response_model=TurnResponse)
+@app.post("/api/sessions/{session_id}/next")
 def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
     session = _load_session(session_id, user_id)
     if session["status"] != "active":
@@ -106,21 +130,39 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
 
     agents = [agent_factory.build_agent(cfg) for cfg in session["agents"]]
     next_agent = agents[len(transcript) % len(agents)]
-
     messages = build_messages(next_agent, transcript, session["topic"])
-    text = next_agent.respond(messages)
-
     turn_index = len(transcript)
-    db.table("mad_turns").insert(
-        {
-            "session_id": session_id,
-            "turn_index": turn_index,
-            "speaker": next_agent.name,
-            "text": text,
-        }
-    ).execute()
 
-    return TurnResponse(turn_index=turn_index, speaker=next_agent.name, text=text)
+    def event_stream():
+        final_text = None
+        for event in next_agent.respond_streaming(messages):
+            if event["type"] == "tool_call" and event["name"] == "web_search":
+                query = event["args"].get("query", "")
+                yield json.dumps({"type": "search", "query": query}) + "\n"
+            elif event["type"] == "text":
+                final_text = event["text"]
+
+        db.table("mad_turns").insert(
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "speaker": next_agent.name,
+                "text": final_text,
+            }
+        ).execute()
+        yield (
+            json.dumps(
+                {
+                    "type": "turn",
+                    "turn_index": turn_index,
+                    "speaker": next_agent.name,
+                    "text": final_text,
+                }
+            )
+            + "\n"
+        )
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @app.post("/api/sessions/{session_id}/end")
