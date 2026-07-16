@@ -28,7 +28,6 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
         response = client.chat.completions.create(model=model, messages=full_messages)
         return response.choices[0].message.content
 
-    message = None
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
             model=model, messages=full_messages, tools=tools
@@ -51,5 +50,7 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
                 }
             )
 
-    # Hit the round cap — return whatever text the last response has, if any.
-    return message.content
+    # Hit the round cap right after executing a round of tool calls — the model
+    # hasn't responded to those results yet. Force one final answer, no more tools.
+    response = client.chat.completions.create(model=model, messages=full_messages)
+    return response.choices[0].message.content

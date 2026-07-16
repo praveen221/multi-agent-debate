@@ -1,30 +1,29 @@
 def _build_messages(agent, transcript, topic):
-    if not transcript:
-        return [
-            {
-                "role": "user",
-                "content": f"The debate topic is: {topic}\n\nGive your opening argument.",
-            }
-        ]
+    messages = [{"role": "user", "content": f"The debate topic is: {topic}"}]
 
-    messages = []
+    if not transcript:
+        messages.append({"role": "user", "content": "Give your opening argument."})
+        return messages
+
     for turn in transcript:
-        role = "assistant" if turn["speaker"] == agent.name else "user"
-        messages.append({"role": role, "content": f"{turn['speaker']}: {turn['text']}"})
+        if turn["speaker"] == agent.name:
+            messages.append({"role": "assistant", "content": turn["text"]})
+        else:
+            messages.append(
+                {"role": "user", "content": f"{turn['speaker']}: {turn['text']}"}
+            )
     return messages
 
 
-def run(agents: list, topic: str, rounds: int = 3, on_turn=None) -> list[dict]:
+def run(agents: list, topic: str):
+    """Yields one turn at a time; the next agent only speaks once you pull again."""
     transcript = []
-    total_turns = rounds * len(agents)
-
-    for i in range(total_turns):
+    i = 0
+    while True:
         agent = agents[i % len(agents)]
         messages = _build_messages(agent, transcript, topic)
         text = agent.respond(messages)
         turn = {"speaker": agent.name, "text": text}
         transcript.append(turn)
-        if on_turn:
-            on_turn(turn)
-
-    return transcript
+        yield turn
+        i += 1
