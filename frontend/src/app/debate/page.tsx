@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { listModels, createSession, type AgentDraft } from "@/lib/api";
+import { listModels, createSession, ApiError, type AgentDraft } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,6 +25,7 @@ export default function NewDebatePage() {
   const [agents, setAgents] = useState<AgentDraft[]>(DEFAULT_AGENTS);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [budgetExceeded, setBudgetExceeded] = useState(false);
 
   useEffect(() => {
     listModels()
@@ -60,6 +61,9 @@ export default function NewDebatePage() {
       const res = await createSession(topic, agents);
       router.push(`/debate/${res.session_id}`);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 402) {
+        setBudgetExceeded(true);
+      }
       setError((e as Error).message);
       setLoading(false);
     }
@@ -128,12 +132,27 @@ export default function NewDebatePage() {
         <Button variant="outline" onClick={addAgent}>
           + Add agent
         </Button>
-        <Button onClick={startDebate} disabled={loading || !canStart}>
+        <Button onClick={startDebate} disabled={loading || !canStart || budgetExceeded}>
           {loading ? "Starting…" : "Start debate"}
         </Button>
       </div>
 
-      {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+      {budgetExceeded ? (
+        <Card className="mt-4 border-destructive/50">
+          <CardContent className="pt-6 text-sm">
+            <p className="font-medium text-destructive">Debate credit used up</p>
+            <p className="mt-1 text-muted-foreground">
+              {error} Email{" "}
+              <a className="underline" href="mailto:mpj1391996@gmail.com">
+                mpj1391996@gmail.com
+              </a>{" "}
+              for more credits.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        error && <p className="mt-4 text-sm text-destructive">{error}</p>
+      )}
     </main>
   );
 }

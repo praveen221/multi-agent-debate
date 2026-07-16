@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { getSession, nextTurnStream, endSession, type Turn } from "@/lib/api";
+import { getSession, nextTurnStream, endSession, ApiError, type Turn } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +29,7 @@ export default function DebateSessionPage() {
   const [searchTrace, setSearchTrace] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [budgetExceeded, setBudgetExceeded] = useState(false);
 
   useEffect(() => {
     setLoadingSession(true);
@@ -43,6 +44,8 @@ export default function DebateSessionPage() {
       .finally(() => setLoadingSession(false));
   }, [sessionId]);
 
+  const debateCost = turns.reduce((sum, t) => sum + (t.cost_usd || 0), 0);
+
   async function handleNextTurn() {
     setError(null);
     setLoading(true);
@@ -54,12 +57,20 @@ export default function DebateSessionPage() {
         } else if (event.type === "turn") {
           setTurns((prev) => [
             ...prev,
-            { turn_index: event.turn_index, speaker: event.speaker, text: event.text },
+            {
+              turn_index: event.turn_index,
+              speaker: event.speaker,
+              text: event.text,
+              cost_usd: event.cost_usd,
+            },
           ]);
           setSearchTrace([]);
         }
       });
     } catch (e) {
+      if (e instanceof ApiError && e.status === 402) {
+        setBudgetExceeded(true);
+      }
       setError((e as Error).message);
     } finally {
       setLoading(false);
@@ -81,9 +92,14 @@ export default function DebateSessionPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Debate</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{topic}</p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Debate</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{topic}</p>
+        </div>
+        <p className="whitespace-nowrap text-xs text-muted-foreground">
+          this debate: ${debateCost.toFixed(4)}
+        </p>
       </div>
 
       <div className="space-y-4">
@@ -119,12 +135,27 @@ export default function DebateSessionPage() {
         )}
       </div>
 
-      {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+      {budgetExceeded ? (
+        <Card className="mt-4 border-destructive/50">
+          <CardContent className="pt-6 text-sm">
+            <p className="font-medium text-destructive">Debate credit used up</p>
+            <p className="mt-1 text-muted-foreground">
+              {error} Email{" "}
+              <a className="underline" href="mailto:mpj1391996@gmail.com">
+                mpj1391996@gmail.com
+              </a>{" "}
+              for more credits.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        error && <p className="mt-4 text-sm text-destructive">{error}</p>
+      )}
 
       <div className="mt-6 flex gap-3">
         {status === "active" ? (
           <>
-            <Button onClick={handleNextTurn} disabled={loading}>
+            <Button onClick={handleNextTurn} disabled={loading || budgetExceeded}>
               {loading ? "Thinking…" : "Next turn"}
             </Button>
             <AlertDialog>

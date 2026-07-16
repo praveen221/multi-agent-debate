@@ -2,11 +2,24 @@ import { createClient } from "@/lib/supabase/client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function authHeader(): Promise<Record<string, string>> {
   const supabase = createClient();
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function throwForResponse(res: Response): Promise<never> {
+  const body = await res.json().catch(() => ({}));
+  throw new ApiError(res.status, body.detail || `Request failed: ${res.status}`);
 }
 
 async function apiFetch(path: string, init: RequestInit = {}) {
@@ -16,16 +29,14 @@ async function apiFetch(path: string, init: RequestInit = {}) {
     ...init.headers,
   };
   const res = await fetch(`${API_URL}${path}`, { ...init, headers });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${res.status}`);
-  }
+  if (!res.ok) await throwForResponse(res);
   return res.json();
 }
 
 export type AgentDraft = { name: string; model: string; use_search: boolean };
-export type Turn = { turn_index: number; speaker: string; text: string };
+export type Turn = { turn_index: number; speaker: string; text: string; cost_usd?: number };
 export type ModelInfo = { id: string; pricing: Record<string, string> };
+export type Credits = { spent_usd: number; limit_usd: number };
 export type SessionSummary = {
   session_id: string;
   topic: string;
@@ -38,10 +49,21 @@ export type SessionDetail = {
 };
 export type StreamEvent =
   | { type: "search"; query: string }
-  | { type: "turn"; turn_index: number; speaker: string; text: string };
+  | {
+      type: "turn";
+      turn_index: number;
+      speaker: string;
+      text: string;
+      cost_usd: number;
+      total_spent_usd: number;
+    };
 
 export function listModels(): Promise<ModelInfo[]> {
   return apiFetch("/api/models");
+}
+
+export function getCredits(): Promise<Credits> {
+  return apiFetch("/api/credits");
 }
 
 export function createSession(topic: string, agents: AgentDraft[]) {
@@ -73,12 +95,9 @@ export async function nextTurnStream(
     headers,
   });
 
-  if (!res.ok || !res.body) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${res.status}`);
-  }
+  if (!res.ok || !res.body) await throwForResponse(res);
 
-  const reader = res.body.getReader();
+  const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 

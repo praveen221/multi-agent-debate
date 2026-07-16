@@ -15,8 +15,8 @@ import models as models_module
 from debate import build_messages
 
 from api.auth import get_current_user_id
+from api.credits import add_spend, check_within_budget, get_or_create_credit_row
 from api.db import get_db
-from api.rate_limit import check_and_increment
 from api.schemas import CreateSessionRequest
 
 app = FastAPI(title="Multi-Agent Debate API")
@@ -42,9 +42,15 @@ def list_models(user_id: str = Depends(get_current_user_id)):
     return [{"id": m["id"], "pricing": m.get("pricing", {})} for m in catalog]
 
 
+@app.get("/api/credits")
+def get_credits(user_id: str = Depends(get_current_user_id)):
+    row = get_or_create_credit_row(user_id)
+    return {"spent_usd": row["spent_usd"], "limit_usd": row["limit_usd"]}
+
+
 @app.post("/api/sessions")
 def create_session(body: CreateSessionRequest, user_id: str = Depends(get_current_user_id)):
-    check_and_increment(user_id)
+    check_within_budget(user_id)
     db = get_db()
     result = (
         db.table("mad_sessions")
@@ -116,7 +122,7 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
     if session["status"] != "active":
         raise HTTPException(status_code=400, detail="Debate has already ended")
 
-    check_and_increment(user_id)
+    check_within_budget(user_id)
 
     db = get_db()
     transcript = (
@@ -135,12 +141,14 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
 
     def event_stream():
         final_text = None
+        cost = 0.0
         for event in next_agent.respond_streaming(messages):
             if event["type"] == "tool_call" and event["name"] == "web_search":
                 query = event["args"].get("query", "")
                 yield json.dumps({"type": "search", "query": query}) + "\n"
             elif event["type"] == "text":
                 final_text = event["text"]
+                cost = event["cost"]
 
         db.table("mad_turns").insert(
             {
@@ -148,8 +156,10 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
                 "turn_index": turn_index,
                 "speaker": next_agent.name,
                 "text": final_text,
+                "cost_usd": cost,
             }
         ).execute()
+        total_spent = add_spend(user_id, cost)
         yield (
             json.dumps(
                 {
@@ -157,6 +167,8 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
                     "turn_index": turn_index,
                     "speaker": next_agent.name,
                     "text": final_text,
+                    "cost_usd": cost,
+                    "total_spent_usd": total_spent,
                 }
             )
             + "\n"

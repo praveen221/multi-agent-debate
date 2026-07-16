@@ -59,23 +59,27 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
 def complete_streaming(client, model, system_prompt, messages, tools=None, tool_executor=None):
     """Same tool loop as complete(), but yields progress along the way:
     {"type": "tool_call", "name", "args"} for each tool call, then finally
-    {"type": "text", "text"}. Lets a caller (e.g. a web API) report live
-    progress instead of only seeing the final answer."""
+    {"type": "text", "text", "cost"} — cost is the sum of every completion
+    call's real USD cost (OpenRouter reports this on every response), since
+    one "turn" can involve several calls across the tool loop."""
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
+    total_cost = 0.0
 
     if not tools:
         response = client.chat.completions.create(model=model, messages=full_messages)
-        yield {"type": "text", "text": response.choices[0].message.content}
+        total_cost += getattr(response.usage, "cost", 0) or 0
+        yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost}
         return
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
             model=model, messages=full_messages, tools=tools
         )
+        total_cost += getattr(response.usage, "cost", 0) or 0
         message = response.choices[0].message
 
         if not message.tool_calls:
-            yield {"type": "text", "text": message.content}
+            yield {"type": "text", "text": message.content, "cost": total_cost}
             return
 
         full_messages.append(message.model_dump(exclude_unset=True))
@@ -93,4 +97,5 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
             )
 
     response = client.chat.completions.create(model=model, messages=full_messages)
-    yield {"type": "text", "text": response.choices[0].message.content}
+    total_cost += getattr(response.usage, "cost", 0) or 0
+    yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost}

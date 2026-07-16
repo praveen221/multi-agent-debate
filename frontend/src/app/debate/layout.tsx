@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { listSessions, type SessionSummary } from "@/lib/api";
+import { listSessions, getCredits, type SessionSummary, type Credits } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -13,6 +13,7 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
   const pathname = usePathname();
   const [checking, setChecking] = useState(true);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [credits, setCredits] = useState<Credits | null>(null);
 
   useEffect(() => {
     const supabase = createClient();
@@ -29,6 +30,9 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
     if (checking) return;
     listSessions()
       .then(setSessions)
+      .catch(() => {});
+    getCredits()
+      .then(setCredits)
       .catch(() => {});
   }, [checking, pathname]);
 
@@ -75,7 +79,13 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
           })}
         </div>
 
-        <div className="mt-4 flex items-center justify-between border-t pt-4">
+        {credits && (
+          <div className="mt-4 border-t pt-4 text-xs text-muted-foreground">
+            ${credits.spent_usd.toFixed(4)} / ${credits.limit_usd.toFixed(2)} used
+          </div>
+        )}
+
+        <div className="mt-2 flex items-center justify-between border-t pt-4">
           <Button variant="ghost" size="sm" onClick={handleSignOut}>
             Sign out
           </Button>
