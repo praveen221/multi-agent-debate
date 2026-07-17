@@ -8,6 +8,7 @@ import { listSessions, getCredits, type SessionSummary, type Credits } from "@/l
 import { formatRelativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { MadWorldLogo } from "@/components/mad-world-logo";
 
 export default function DebateLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -52,8 +53,12 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-screen overflow-hidden">
       <aside className="flex w-64 shrink-0 flex-col border-r p-4">
+        <Link href="/debate" className="mb-4 block px-1">
+          <MadWorldLogo size="sm" />
+        </Link>
+
         <Button className="mb-4 w-full" onClick={() => router.push("/debate")}>
           + New debate
         </Button>
@@ -103,7 +108,7 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
         </div>
       </aside>
 
-      <div className="flex-1 overflow-y-auto">{children}</div>
+      <div className="h-full flex-1 overflow-y-auto">{children}</div>
     </div>
   );
 }
