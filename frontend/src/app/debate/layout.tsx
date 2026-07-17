@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { listSessions, getCredits, type SessionSummary, type Credits } from "@/lib/api";
+import { formatRelativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -69,11 +70,20 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
                 key={s.session_id}
                 href={href}
                 title={s.topic}
-                className={`block truncate rounded px-2 py-1.5 text-sm hover:bg-muted ${
-                  active ? "bg-muted font-medium" : "text-muted-foreground"
+                className={`block rounded px-2 py-1.5 hover:bg-muted ${
+                  active ? "bg-muted" : ""
                 }`}
               >
-                {s.topic || s.session_id}
+                <p
+                  className={`truncate text-sm ${
+                    active ? "font-medium" : "text-muted-foreground"
+                  }`}
+                >
+                  {s.topic || s.session_id}
+                </p>
+                <p className="text-xs text-muted-foreground/70">
+                  {formatRelativeTime(s.created_at)}
+                </p>
               </Link>
             );
           })}

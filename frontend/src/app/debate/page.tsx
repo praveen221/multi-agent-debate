@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { listModels, createSession, ApiError, type AgentDraft } from "@/lib/api";
+import { listModels, createSession, ApiError, type AgentDraft, type ModelInfo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { ModelCombobox } from "@/components/model-combobox";
 
 const DEFAULT_TOPIC =
   "Can a debate and discussion between multiple models and agents lead to better and more factually correct research rather than using one model?";
@@ -20,7 +21,7 @@ const DEFAULT_AGENTS: AgentDraft[] = [
 
 export default function NewDebatePage() {
   const router = useRouter();
-  const [modelIds, setModelIds] = useState<string[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [topic, setTopic] = useState(DEFAULT_TOPIC);
   const [agents, setAgents] = useState<AgentDraft[]>(DEFAULT_AGENTS);
   const [loading, setLoading] = useState(false);
@@ -29,7 +30,7 @@ export default function NewDebatePage() {
 
   useEffect(() => {
     listModels()
-      .then((models) => setModelIds(models.map((m) => m.id)))
+      .then(setModels)
       .catch(() => {});
   }, []);
 
@@ -98,11 +99,10 @@ export default function NewDebatePage() {
 
               <div className="space-y-1.5">
                 <Label>Model</Label>
-                <Input
-                  list="model-options"
+                <ModelCombobox
+                  models={models}
                   value={agent.model}
-                  onChange={(e) => updateAgent(i, { model: e.target.value })}
-                  placeholder="type to search…"
+                  onChange={(id) => updateAgent(i, { model: id })}
                 />
               </div>
 
@@ -117,12 +117,6 @@ export default function NewDebatePage() {
           </Card>
         ))}
       </div>
-
-      <datalist id="model-options">
-        {modelIds.map((id) => (
-          <option key={id} value={id} />
-        ))}
-      </datalist>
 
       {hasDuplicateNames && (
         <p className="mt-2 text-xs text-destructive">Agent names must be unique.</p>

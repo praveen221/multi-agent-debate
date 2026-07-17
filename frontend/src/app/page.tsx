@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -50,6 +51,12 @@ export default function Home() {
       <Button onClick={signIn} size="lg">
         Sign in with Google
       </Button>
+      <Link
+        href="/privacy"
+        className="absolute bottom-6 text-xs text-muted-foreground hover:underline"
+      >
+        Privacy
+      </Link>
     </main>
   );
 }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getSession, nextTurnStream, endSession, ApiError, type Turn } from "@/lib/api";
+import { agentColorClass } from "@/lib/agent-colors";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,7 @@ export default function DebateSessionPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
+  const [agentOrder, setAgentOrder] = useState<string[]>([]);
 
   useEffect(() => {
     setLoadingSession(true);
@@ -39,10 +41,16 @@ export default function DebateSessionPage() {
         setTopic(session.topic);
         setStatus(session.status);
         setTurns(turns);
+        setAgentOrder(session.agents.map((a) => a.name));
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoadingSession(false));
   }, [sessionId]);
+
+  function colorForSpeaker(speaker: string): string {
+    const index = agentOrder.indexOf(speaker);
+    return agentColorClass(index === -1 ? 0 : index);
+  }
 
   const debateCost = turns.reduce((sum, t) => sum + (t.cost_usd || 0), 0);
 
@@ -107,7 +115,7 @@ export default function DebateSessionPage() {
           <Card key={turn.turn_index}>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">
-                <Badge variant="secondary">{turn.speaker}</Badge>
+                <Badge className={colorForSpeaker(turn.speaker)}>{turn.speaker}</Badge>
               </CardTitle>
             </CardHeader>
             <CardContent className="whitespace-pre-wrap text-sm">{turn.text}</CardContent>

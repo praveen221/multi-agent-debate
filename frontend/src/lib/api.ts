@@ -108,7 +108,12 @@ export async function nextTurnStream(
     const lines = buffer.split("\n");
     buffer = lines.pop() || "";
     for (const line of lines) {
-      if (line.trim()) onEvent(JSON.parse(line) as StreamEvent);
+      if (!line.trim()) continue;
+      const parsed = JSON.parse(line);
+      // A mid-stream failure — surface it the same way a rejected fetch
+      // would, so callers only need one catch block, not a special case.
+      if (parsed.type === "error") throw new Error(parsed.message);
+      onEvent(parsed as StreamEvent);
     }
   }
 }
