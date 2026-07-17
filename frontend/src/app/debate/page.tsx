@@ -109,11 +109,11 @@ export default function NewDebatePage() {
   }
 
   return (
-    <main className="flex h-full flex-col items-center justify-center px-6">
+    <main className="flex h-full flex-col items-center justify-center overflow-y-auto px-6">
       <div className="w-full max-w-2xl">
-        <h1 className="mb-6 text-center text-2xl font-semibold">What should they debate?</h1>
+        <h1 className="mb-6 text-center text-3xl">What should they debate?</h1>
 
-        <InputGroup className="h-auto">
+        <InputGroup className="h-auto bg-card dark:bg-card">
           <InputGroupTextarea
             placeholder={TOPIC_PLACEHOLDER}
             value={topic}
@@ -123,13 +123,19 @@ export default function NewDebatePage() {
             autoFocus
           />
           <InputGroupAddon align="block-end">
-            <span className="text-xs text-muted-foreground">
+            <span
+              className={
+                configValid
+                  ? "text-sm font-medium text-indigo-600 dark:text-indigo-400"
+                  : "text-sm font-medium text-destructive"
+              }
+            >
               {configValid ? `Debating with ${summary}` : "Fix agent configuration"}
             </span>
             <InputGroupButton
               variant="ghost"
               size="sm"
-              className="ml-auto"
+              className="ml-auto text-foreground hover:text-foreground"
               onClick={() => setConfigOpen(true)}
             >
               <Settings2 className="h-3.5 w-3.5" />
@@ -167,12 +173,12 @@ export default function NewDebatePage() {
 
       <Sheet open={configOpen} onOpenChange={setConfigOpen}>
         <SheetContent className="flex flex-col overflow-hidden">
-          <SheetHeader>
+          <SheetHeader className="pt-6 pr-10">
             <SheetTitle>Debate configuration</SheetTitle>
             <SheetDescription>Choose the agents, their models, and web search access.</SheetDescription>
           </SheetHeader>
 
-          <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4">
+          <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4 pt-1">
             {agents.map((agent, i) => (
               <Card key={i}>
                 <CardContent className="space-y-3 pt-6">

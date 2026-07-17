@@ -108,7 +108,7 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
         </div>
       </aside>
 
-      <div className="h-full flex-1 overflow-y-auto">{children}</div>
+      <div className="h-full flex-1 overflow-hidden">{children}</div>
     </div>
   );
 }

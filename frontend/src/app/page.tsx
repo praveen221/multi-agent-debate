@@ -64,7 +64,16 @@ export default function Home() {
   }
 
   return (
-    <main className="relative flex min-h-screen flex-col items-center justify-center gap-6 px-6 text-center">
+    <main className="relative flex min-h-screen flex-col items-center justify-center gap-6 overflow-hidden px-6 text-center">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-1/2 top-1/2 h-[32rem] w-[32rem] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-40 blur-3xl dark:opacity-20"
+        style={{
+          background:
+            "radial-gradient(circle at 35% 35%, #a7e5d3, transparent 60%), radial-gradient(circle at 65% 65%, #c8b8e0, transparent 60%)",
+        }}
+      />
+
       <div className="absolute right-6 top-6">
         <ThemeToggle />
       </div>

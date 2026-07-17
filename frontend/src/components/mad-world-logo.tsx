@@ -12,15 +12,7 @@ function LogoMark({ size }: { size: number }) {
 
 export function MadWorldWordmark({ className = "" }: { className?: string }) {
   return (
-    <span
-      className={className}
-      style={{
-        backgroundImage: `linear-gradient(90deg, ${BRAND_FROM}, ${BRAND_TO})`,
-        WebkitBackgroundClip: "text",
-        backgroundClip: "text",
-        color: "transparent",
-      }}
-    >
+    <span className={`font-[family-name:var(--font-display)] text-foreground ${className}`}>
       Mad World
     </span>
   );
@@ -34,7 +26,7 @@ export function MadWorldLogo({
   className?: string;
 }) {
   const markSize = size === "lg" ? 40 : 22;
-  const textClass = size === "lg" ? "text-4xl font-semibold" : "text-lg font-semibold";
+  const textClass = size === "lg" ? "text-4xl" : "text-lg";
   return (
     <span className={`inline-flex items-center gap-2 ${className}`}>
       <LogoMark size={markSize} />

@@ -8,7 +8,7 @@ export default function PrivacyPage() {
       <Link href="/" className="text-sm text-muted-foreground hover:underline">
         ← Back
       </Link>
-      <h1 className="mb-6 mt-4 text-2xl font-semibold">Privacy</h1>
+      <h1 className="mb-6 mt-4 text-3xl">Privacy</h1>
 
       <div className="space-y-4 text-sm text-muted-foreground">
         <p>

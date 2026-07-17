@@ -7,6 +7,19 @@ const PALETTE = [
   "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-300",
 ];
 
+const AVATAR_PALETTE = [
+  "bg-indigo-500 text-white",
+  "bg-teal-500 text-white",
+  "bg-amber-500 text-white",
+  "bg-rose-500 text-white",
+  "bg-violet-500 text-white",
+  "bg-sky-500 text-white",
+];
+
 export function agentColorClass(index: number): string {
   return PALETTE[index % PALETTE.length];
+}
+
+export function agentAvatarClass(index: number): string {
+  return AVATAR_PALETTE[index % AVATAR_PALETTE.length];
 }
