@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { getSession, nextTurnStream, endSession, ApiError, type Turn } from "@/lib/api";
+import { getSession, nextTurnStream, endSession, ApiError, type AgentDraft, type Turn } from "@/lib/api";
 import { agentAvatarClass } from "@/lib/agent-colors";
+import { shortModelName } from "@/lib/models";
 import { TurnMarkdown } from "@/components/turn-markdown";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,12 +33,14 @@ export default function DebateSessionPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
-  const [agentOrder, setAgentOrder] = useState<string[]>([]);
+  const [agents, setAgents] = useState<AgentDraft[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLHeadingElement>(null);
   const [topicOverflowing, setTopicOverflowing] = useState(false);
+  const autoStartedRef = useRef(false);
 
   useEffect(() => {
+    autoStartedRef.current = false;
     setLoadingSession(true);
     setError(null);
     getSession(sessionId)
@@ -45,7 +48,7 @@ export default function DebateSessionPage() {
         setTopic(session.topic);
         setStatus(session.status);
         setTurns(turns);
-        setAgentOrder(session.agents.map((a) => a.name));
+        setAgents(session.agents);
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoadingSession(false));
@@ -74,7 +77,7 @@ export default function DebateSessionPage() {
   }, [topic]);
 
   function avatarForSpeaker(speaker: string): string {
-    const index = agentOrder.indexOf(speaker);
+    const index = agents.findIndex((a) => a.name === speaker);
     return agentAvatarClass(index === -1 ? 0 : index);
   }
 
@@ -84,6 +87,25 @@ export default function DebateSessionPage() {
       .slice(0, 2)
       .map((w) => w[0]?.toUpperCase())
       .join("");
+  }
+
+  function agentConfigFor(speaker: string): AgentDraft | undefined {
+    return agents.find((a) => a.name === speaker);
+  }
+
+  function costSoFarFor(speaker: string): number {
+    return turns.filter((t) => t.speaker === speaker).reduce((sum, t) => sum + (t.cost_usd || 0), 0);
+  }
+
+  function avatarTitleFor(speaker: string): string {
+    const config = agentConfigFor(speaker);
+    if (!config) return speaker;
+    return [
+      speaker,
+      config.model,
+      `Web search: ${config.use_search ? "on" : "off"}`,
+      `Cost so far: $${costSoFarFor(speaker).toFixed(4)}`,
+    ].join("\n");
   }
 
   const debateCost = turns.reduce((sum, t) => sum + (t.cost_usd || 0), 0);
@@ -118,6 +140,14 @@ export default function DebateSessionPage() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!loadingSession && status === "active" && turns.length === 0 && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      handleNextTurn();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingSession, status, turns.length]);
 
   async function handleEnd() {
     await endSession(sessionId).catch(() => {});
@@ -175,12 +205,21 @@ export default function DebateSessionPage() {
         {turns.map((turn) => (
           <div key={turn.turn_index} className="flex w-full gap-3">
             <div
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(turn.speaker)}`}
+              title={avatarTitleFor(turn.speaker)}
+              className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(turn.speaker)}`}
             >
               {initialsForSpeaker(turn.speaker)}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="mb-1 text-sm font-medium">{turn.speaker}</p>
+              <p className="mb-1 text-sm">
+                <span className="font-medium">{turn.speaker}</span>
+                {agentConfigFor(turn.speaker) && (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {shortModelName(agentConfigFor(turn.speaker)!.model)}
+                  </span>
+                )}
+              </p>
               <TurnMarkdown text={turn.text} />
             </div>
           </div>
@@ -189,9 +228,10 @@ export default function DebateSessionPage() {
         {loading && (
           <div className="flex w-full gap-3">
             <div
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(agentOrder[turns.length % (agentOrder.length || 1)] || "")}`}
+              title={avatarTitleFor(agents[turns.length % (agents.length || 1)]?.name || "")}
+              className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(agents[turns.length % (agents.length || 1)]?.name || "")}`}
             >
-              {initialsForSpeaker(agentOrder[turns.length % (agentOrder.length || 1)] || "?")}
+              {initialsForSpeaker(agents[turns.length % (agents.length || 1)]?.name || "?")}
             </div>
             <div className="min-w-0 flex-1 space-y-2 pt-1 text-sm text-muted-foreground">
               {searchTrace.length === 0 ? (

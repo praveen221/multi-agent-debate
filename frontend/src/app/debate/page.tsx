@@ -23,6 +23,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { ModelCombobox } from "@/components/model-combobox";
+import { shortModelName } from "@/lib/models";
 
 const TOPIC_PLACEHOLDER =
   "What should the agents debate? e.g. Can a debate between multiple models lead to more factually correct research than using one model alone?";
@@ -31,14 +32,6 @@ const DEFAULT_AGENTS: AgentDraft[] = [
   { name: "Agent A", model: "deepseek/deepseek-v4-pro", use_search: true },
   { name: "Agent B", model: "moonshotai/kimi-k2.5", use_search: true },
 ];
-
-function shortModelName(id: string): string {
-  const slug = id.split("/")[1] || id;
-  return slug
-    .split("-")
-    .map((w) => (w.length <= 3 && /\d/.test(w) ? w.toUpperCase() : w[0]?.toUpperCase() + w.slice(1)))
-    .join(" ");
-}
 
 export default function NewDebatePage() {
   const router = useRouter();
