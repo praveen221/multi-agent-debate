@@ -9,22 +9,29 @@ import re
 from client import get_client
 
 DIRECTIONS = {"converging", "diverging", "off_topic", "stalling", "balanced"}
-SUGGESTED_ACTIONS = {"none", "intervene", "pressure_test", "refocus"}
+SUGGESTED_ACTIONS = {"none", "intervene", "pressure_test", "refocus", "conclude"}
 
 VERDICT_SYSTEM = (
     "You are the judge overseeing a multi-participant debate. You observe from "
     "the sideline; you are not a participant. Read the transcript and assess "
-    "where the discussion is heading. Respond with ONLY a JSON object — no "
-    "markdown fences, no commentary — with exactly these keys:\n"
+    "where the discussion is heading. Each participant's web search results "
+    "(title, URL, snippet) appear indented beneath their turns — when "
+    "participants' claims contradict each other or their own cited sources, say "
+    "so explicitly and distinguish factual disagreements (about facts, numbers, "
+    "events) from differences of interpretation. Respond with ONLY a JSON "
+    "object — no markdown fences, no commentary — with exactly these keys:\n"
     '- "direction": one of "converging", "diverging", "off_topic", "stalling", "balanced"\n'
     '- "summary": 1-2 sentences on the current state and trajectory of the debate, '
-    "referencing the actual arguments made\n"
+    "referencing the actual arguments made and flagging any factual contradiction\n"
     '- "agreements": array of short strings — points the participants now agree on (may be empty)\n'
-    '- "contentions": array of short strings — points still in dispute (may be empty)\n'
-    '- "suggested_action": one of "none", "intervene", "pressure_test", "refocus". '
+    '- "contentions": array of short strings — points still in dispute; prefix genuinely '
+    'factual disputes with "Factual: " (may be empty)\n'
+    '- "suggested_action": one of "none", "intervene", "pressure_test", "refocus", "conclude". '
     "Use pressure_test when participants are converging without enough scrutiny, "
     "refocus when the discussion has drifted from the topic, intervene when you have "
-    "an observation the participants themselves ought to hear, and none otherwise."
+    "an observation the participants themselves ought to hear, conclude ONLY when the "
+    "debate has stayed converged across multiple rounds and further rounds would add "
+    "little, and none otherwise."
 )
 
 PRESSURE_TEST_SYSTEM = (
@@ -126,9 +133,34 @@ def _parse_verdict(raw: str) -> dict:
 
 def run_verdict(model: str, topic: str, transcript: list[dict]) -> tuple[str, dict, float]:
     """Returns (display_text, verdict_jsonb, cost)."""
-    user_content = f"The debate topic is: {topic}\n\nTranscript so far:\n\n{_render_transcript(transcript)}"
+    user_content = (
+        f"The debate topic is: {topic}\n\n"
+        f"Transcript so far:\n\n{_render_transcript_with_sources(transcript, snippet_chars=150)}"
+    )
     raw, cost = _call(model, VERDICT_SYSTEM, user_content)
     verdict = _parse_verdict(raw)
+
+    # Gate 'conclude' in code, not just in the prompt: two agents often
+    # politely converge in the opening rounds, and a "this looks done"
+    # nudge there would send users away before the debate gets tested.
+    # Conclude is only allowed once convergence has held across two
+    # consecutive verdicts; otherwise downgrade to pressure_test (push
+    # deeper instead of leaving) or none.
+    if verdict["suggested_action"] == "conclude":
+        previous = None
+        for turn in transcript:
+            v = turn.get("verdict") or {}
+            if turn.get("role") == "judge" and v.get("kind") == "verdict":
+                previous = v
+        stable = (
+            previous is not None
+            and previous.get("direction") == "converging"
+            and verdict["direction"] == "converging"
+        )
+        if not stable:
+            verdict["suggested_action"] = (
+                "pressure_test" if verdict["direction"] == "converging" else "none"
+            )
     return verdict["summary"], verdict, cost
 
 
@@ -140,21 +172,27 @@ def run_interjection(model: str, topic: str, transcript: list[dict], action: str
     return text.strip(), cost
 
 
-def _render_transcript_with_sources(transcript: list[dict]) -> str:
+def _render_transcript_with_sources(transcript: list[dict], snippet_chars: int = 200) -> str:
     """Like _render_transcript, but each agent turn is followed by the sources
-    it actually searched — the report is the one judge call that gets them,
-    so its citations point at real evidence instead of being reconstructed."""
+    it actually searched, so judge output can point at real evidence instead
+    of reconstructing it. Repeated URLs are shown once — agents often re-find
+    the same pages, and the judge doesn't need them twice."""
     lines = []
+    seen_urls: set[str] = set()
     for turn in transcript:
         role = turn.get("role", "agent")
         if role == "agent":
             lines.append(f"{turn['speaker']}: {turn['text']}")
             for search in turn.get("sources") or []:
                 for r in search.get("results", []):
-                    snippet = (r.get("snippet") or "")[:200]
+                    url = r.get("url", "")
+                    if url and url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    snippet = (r.get("snippet") or "")[:snippet_chars]
                     lines.append(
                         f"  [source used by {turn['speaker']}] {r.get('title', '')} — "
-                        f"{r.get('url', '')} — {snippet}"
+                        f"{url} — {snippet}"
                     )
         elif role == "human":
             lines.append(f"Human moderator: {turn['text']}")

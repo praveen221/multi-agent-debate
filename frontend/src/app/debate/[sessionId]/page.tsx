@@ -611,6 +611,31 @@ export default function DebateSessionPage() {
                 )}
                 {status === "active" && turn.turn_index === lastJudgeRemarkIndex && (
                   <div className="mt-2.5 flex flex-wrap gap-2">
+                    {turn.verdict?.suggested_action === "conclude" && (
+                      <AlertDialog>
+                        <AlertDialogTrigger
+                          render={
+                            <Button size="sm" disabled={judgeActionsDisabled}>
+                              Conclude &amp; generate report
+                            </Button>
+                          }
+                        />
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Conclude this debate?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              The judge thinks this debate has settled. No more rounds after
+                              this — the judge will write the closing report, and the transcript
+                              stays saved in your sidebar.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Keep debating</AlertDialogCancel>
+                            <AlertDialogAction onClick={handleEnd}>Conclude</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
                     {JUDGE_ACTIONS.map(({ action, label }) => (
                       <Button
                         key={action}

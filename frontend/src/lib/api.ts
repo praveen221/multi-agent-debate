@@ -51,7 +51,7 @@ export type Verdict = {
   summary?: string;
   agreements?: string[];
   contentions?: string[];
-  suggested_action?: JudgeAction | "none";
+  suggested_action?: JudgeAction | "conclude" | "none";
   landed?: string;
   evidence?: EvidenceItem[];
   cautions?: string[];
