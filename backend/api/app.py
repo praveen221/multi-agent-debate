@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -292,16 +293,15 @@ def update_session(
     return {"judge": judge_config}
 
 
+DEFAULT_JUDGE_MODEL = "moonshotai/kimi-k2.5"
+
+
 @app.post("/api/sessions/{session_id}/judge")
 def judge_action(
     session_id: str, body: JudgeActionRequest, user_id: str = Depends(get_current_user_id)
 ):
     session = _load_session(session_id, user_id)
-    if session["status"] != "active":
-        raise HTTPException(status_code=400, detail="Debate has already ended")
     judge_config = session.get("judge") or {}
-    if not judge_config.get("enabled"):
-        raise HTTPException(status_code=400, detail="The judge is not enabled for this session")
 
     db = get_db()
     transcript = (
@@ -313,6 +313,52 @@ def judge_action(
         .data
     )
     turn_index = len(transcript)
+
+    if body.action == "report":
+        # The closing report runs on concluded debates and doesn't require
+        # the judge toggle — it's the debate's ending, not an interruption.
+        if session["status"] != "ended":
+            raise HTTPException(status_code=400, detail="Conclude the debate first")
+        existing = next(
+            (t for t in transcript if (t.get("verdict") or {}).get("kind") == "report"), None
+        )
+        if existing:
+            return {
+                "turn_index": existing["turn_index"],
+                "role": "judge",
+                "speaker": "Judge",
+                "text": existing["text"],
+                "cost_usd": existing["cost_usd"],
+                "verdict": existing["verdict"],
+            }
+        check_within_budget(user_id)
+        model = judge_config.get("model") or DEFAULT_JUDGE_MODEL
+        text, verdict, cost = judge_module.run_report(model, session["topic"], transcript)
+        db.table("mad_turns").insert(
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "role": "judge",
+                "speaker": "Judge",
+                "text": text,
+                "cost_usd": cost,
+                "verdict": verdict,
+            }
+        ).execute()
+        add_spend(user_id, cost)
+        return {
+            "turn_index": turn_index,
+            "role": "judge",
+            "speaker": "Judge",
+            "text": text,
+            "cost_usd": cost,
+            "verdict": verdict,
+        }
+
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="Debate has already ended")
+    if not judge_config.get("enabled"):
+        raise HTTPException(status_code=400, detail="The judge is not enabled for this session")
 
     if body.action == "intervene":
         # No model call — promote an existing verdict's text into the debate.
@@ -362,6 +408,54 @@ def judge_action(
         "text": text,
         "cost_usd": cost,
         "verdict": verdict,
+    }
+
+
+@app.post("/api/sessions/{session_id}/share")
+def share_session(session_id: str, user_id: str = Depends(get_current_user_id)):
+    session = _load_session(session_id, user_id)
+    if session.get("share_id"):
+        return {"share_id": session["share_id"]}
+    share_id = secrets.token_urlsafe(12)
+    get_db().table("mad_sessions").update({"share_id": share_id}).eq("id", session_id).execute()
+    return {"share_id": share_id}
+
+
+@app.post("/api/sessions/{session_id}/unshare")
+def unshare_session(session_id: str, user_id: str = Depends(get_current_user_id)):
+    _load_session(session_id, user_id)
+    get_db().table("mad_sessions").update({"share_id": None}).eq("id", session_id).execute()
+    return {"share_id": None}
+
+
+@app.get("/api/public/{share_id}")
+def get_public_debate(share_id: str):
+    """Unauthenticated read of a shared debate. Sanitized: no user_id, no
+    costs, no personas — just what a reader of the debate should see."""
+    db = get_db()
+    result = (
+        db.table("mad_sessions").select("*").eq("share_id", share_id).maybe_single().execute()
+    )
+    session = result.data if result else None
+    if session is None:
+        raise HTTPException(status_code=404, detail="Debate not found")
+    turns = (
+        db.table("mad_turns")
+        .select("turn_index, role, speaker, text, sources, verdict")
+        .eq("session_id", session["id"])
+        .order("turn_index")
+        .execute()
+        .data
+    )
+    return {
+        "topic": session["topic"],
+        "status": session["status"],
+        "created_at": session["created_at"],
+        "agents": [
+            {"name": a["name"], "model": a["model"], "use_search": a.get("use_search", False)}
+            for a in session["agents"]
+        ],
+        "turns": turns,
     }
 
 

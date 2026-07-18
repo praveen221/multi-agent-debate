@@ -45,6 +45,24 @@ REFOCUS_SYSTEM = (
     "text, spoken directly to the participants."
 )
 
+REPORT_SYSTEM = (
+    "You are the judge who oversaw a multi-participant debate that has now "
+    "concluded. Write the closing report for a reader who did not watch the "
+    "debate. Be honest about confidence and keep disagreement visible — do "
+    "not manufacture a consensus that wasn't reached. Respond with ONLY a "
+    "JSON object — no markdown fences, no commentary — with exactly these keys:\n"
+    '- "landed": 2-3 sentences on where the debate ultimately landed, referencing '
+    "the actual arguments\n"
+    '- "agreements": array of short strings — points the participants ended up agreeing on\n'
+    '- "contentions": array of short strings — points that stayed genuinely contested\n'
+    '- "evidence": array of objects {"claim": str, "sources": [{"title": str, "url": str}]} — '
+    "the claims that mattered most and the sources that grounded them. Only cite "
+    "sources that actually appear in the transcript below; if a claim was never "
+    "grounded in a source, use an empty sources array\n"
+    '- "cautions": array of short strings — what a skeptical reader should still '
+    "verify independently"
+)
+
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 
@@ -120,3 +138,73 @@ def run_interjection(model: str, topic: str, transcript: list[dict], action: str
     user_content = f"The debate topic is: {topic}\n\nTranscript so far:\n\n{_render_transcript(transcript)}"
     text, cost = _call(model, system, user_content)
     return text.strip(), cost
+
+
+def _render_transcript_with_sources(transcript: list[dict]) -> str:
+    """Like _render_transcript, but each agent turn is followed by the sources
+    it actually searched — the report is the one judge call that gets them,
+    so its citations point at real evidence instead of being reconstructed."""
+    lines = []
+    for turn in transcript:
+        role = turn.get("role", "agent")
+        if role == "agent":
+            lines.append(f"{turn['speaker']}: {turn['text']}")
+            for search in turn.get("sources") or []:
+                for r in search.get("results", []):
+                    snippet = (r.get("snippet") or "")[:200]
+                    lines.append(
+                        f"  [source used by {turn['speaker']}] {r.get('title', '')} — "
+                        f"{r.get('url', '')} — {snippet}"
+                    )
+        elif role == "human":
+            lines.append(f"Human moderator: {turn['text']}")
+        elif role == "judge" and (turn.get("verdict") or {}).get("kind") == "intervention":
+            lines.append(f"The judge interjected: {turn['text']}")
+    return "\n\n".join(lines)
+
+
+def _parse_report(raw: str) -> dict:
+    try:
+        parsed = json.loads(_JSON_FENCE_RE.sub("", raw.strip()))
+        if not isinstance(parsed, dict):
+            raise ValueError("not an object")
+    except (json.JSONDecodeError, ValueError):
+        return {
+            "kind": "report",
+            "landed": raw.strip(),
+            "agreements": [],
+            "contentions": [],
+            "evidence": [],
+            "cautions": [],
+        }
+
+    evidence = []
+    for item in parsed.get("evidence") or []:
+        if not isinstance(item, dict) or not item.get("claim"):
+            continue
+        sources = [
+            {"title": str(s.get("title") or ""), "url": str(s.get("url") or "")}
+            for s in item.get("sources") or []
+            if isinstance(s, dict) and s.get("url")
+        ]
+        evidence.append({"claim": str(item["claim"]), "sources": sources})
+
+    return {
+        "kind": "report",
+        "landed": str(parsed.get("landed") or raw.strip()),
+        "agreements": [str(a) for a in parsed.get("agreements") or [] if a],
+        "contentions": [str(c) for c in parsed.get("contentions") or [] if c],
+        "evidence": evidence,
+        "cautions": [str(c) for c in parsed.get("cautions") or [] if c],
+    }
+
+
+def run_report(model: str, topic: str, transcript: list[dict]) -> tuple[str, dict, float]:
+    """Returns (display_text, report_jsonb, cost)."""
+    user_content = (
+        f"The debate topic was: {topic}\n\n"
+        f"Full transcript:\n\n{_render_transcript_with_sources(transcript)}"
+    )
+    raw, cost = _call(model, REPORT_SYSTEM, user_content)
+    report = _parse_report(raw)
+    return report["landed"], report, cost

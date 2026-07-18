@@ -42,15 +42,19 @@ export type AgentDraft = {
 export type SourceResult = { title: string; url: string; snippet: string };
 export type Source = { query: string; results: SourceResult[] };
 export type JudgeConfig = { enabled: boolean; model: string };
-export type JudgeAction = "verdict" | "intervene" | "pressure_test" | "refocus";
+export type JudgeAction = "verdict" | "intervene" | "pressure_test" | "refocus" | "report";
+export type EvidenceItem = { claim: string; sources: { title: string; url: string }[] };
 export type Verdict = {
-  kind: "verdict" | "intervention";
+  kind: "verdict" | "intervention" | "report";
   action?: JudgeAction;
   direction?: string | null;
   summary?: string;
   agreements?: string[];
   contentions?: string[];
   suggested_action?: JudgeAction | "none";
+  landed?: string;
+  evidence?: EvidenceItem[];
+  cautions?: string[];
 };
 export type Turn = {
   turn_index: number;
@@ -76,7 +80,16 @@ export type SessionDetail = {
     status: string;
     agents: AgentDraft[];
     judge?: JudgeConfig | null;
+    share_id?: string | null;
   };
+  turns: Turn[];
+};
+export type PublicAgent = { name: string; model: string; use_search: boolean };
+export type PublicDebate = {
+  topic: string;
+  status: string;
+  created_at: string;
+  agents: PublicAgent[];
   turns: Turn[];
 };
 export type StreamEvent =
@@ -131,6 +144,18 @@ export function getSession(sessionId: string): Promise<SessionDetail> {
 
 export function endSession(sessionId: string) {
   return apiFetch(`/api/sessions/${sessionId}/end`, { method: "POST" });
+}
+
+export function shareSession(sessionId: string) {
+  return apiFetch(`/api/sessions/${sessionId}/share`, { method: "POST" }) as Promise<{
+    share_id: string;
+  }>;
+}
+
+export function unshareSession(sessionId: string) {
+  return apiFetch(`/api/sessions/${sessionId}/unshare`, { method: "POST" }) as Promise<{
+    share_id: null;
+  }>;
 }
 
 export function addSteerMessage(sessionId: string, text: string) {

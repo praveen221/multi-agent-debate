@@ -37,6 +37,6 @@ class NextTurnRequest(BaseModel):
 
 
 class JudgeActionRequest(BaseModel):
-    action: Literal["verdict", "intervene", "pressure_test", "refocus"]
+    action: Literal["verdict", "intervene", "pressure_test", "refocus", "report"]
     # For 'intervene': the verdict turn whose text gets spoken into the debate.
     source_turn_index: int | None = None

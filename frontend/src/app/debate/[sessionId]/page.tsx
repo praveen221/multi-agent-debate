@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { Scale } from "lucide-react";
+import { Scale, Share2 } from "lucide-react";
 import {
   getSession,
   nextTurnStream,
@@ -10,11 +10,14 @@ import {
   addSteerMessage,
   runJudge,
   updateSessionJudge,
+  shareSession,
+  unshareSession,
   ApiError,
   type AgentDraft,
   type JudgeConfig,
   type Turn,
 } from "@/lib/api";
+import { ReportCard } from "@/components/report-card";
 import { agentAvatarClass } from "@/lib/agent-colors";
 import { shortModelName } from "@/lib/models";
 import { TurnMarkdown } from "@/components/turn-markdown";
@@ -87,9 +90,15 @@ export default function DebateSessionPage() {
   const [steerInput, setSteerInput] = useState("");
   const [pendingSteerText, setPendingSteerText] = useState<string | null>(null);
   const [judge, setJudge] = useState<JudgeConfig | null>(null);
-  const [judging, setJudging] = useState<"verdict" | "intervene" | "pressure_test" | "refocus" | null>(null);
+  const [judging, setJudging] = useState<
+    "verdict" | "intervene" | "pressure_test" | "refocus" | "report" | null
+  >(null);
   const [lastJudgedAt, setLastJudgedAt] = useState(0);
   const [patchingJudge, setPatchingJudge] = useState(false);
+  const [shareId, setShareId] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLHeadingElement>(null);
   const [topicOverflowing, setTopicOverflowing] = useState(false);
@@ -105,6 +114,7 @@ export default function DebateSessionPage() {
         setTurns(turns);
         setAgents(session.agents);
         setJudge(session.judge || null);
+        setShareId(session.share_id || null);
         setLastJudgedAt(agentTurnsAtLastJudge(turns));
         const startCount = turns.length === 0 ? 0 : agentTurnCount(turns);
         setAutoplayCycleStart(startCount);
@@ -288,6 +298,50 @@ export default function DebateSessionPage() {
   async function handleEnd() {
     await endSession(sessionId).catch(() => {});
     setStatus("ended");
+    generateReport();
+  }
+
+  async function generateReport() {
+    if (judging !== null) return;
+    setJudging("report");
+    try {
+      const turn = await runJudge(sessionId, "report");
+      setTurns((prev) =>
+        prev.some((t) => t.verdict?.kind === "report") ? prev : [...prev, turn],
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setJudging(null);
+    }
+  }
+
+  async function handleShare() {
+    if (shareId || shareBusy) return;
+    setShareBusy(true);
+    try {
+      const res = await shareSession(sessionId);
+      setShareId(res.share_id);
+      await navigator.clipboard
+        .writeText(`${window.location.origin}/d/${res.share_id}`)
+        .then(() => setShareCopied(true))
+        .catch(() => {});
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function handleUnshare() {
+    try {
+      await unshareSession(sessionId);
+      setShareId(null);
+      setShareOpen(false);
+      setShareCopied(false);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
 
   // Everything is round-based: this plays one full round of all agents via
@@ -372,6 +426,9 @@ export default function DebateSessionPage() {
   // older one would inject a stale read of the debate.
   const lastJudgeRemarkIndex = [...turns].reverse().find((t) => t.role === "judge")?.turn_index;
   const judgeActionsDisabled = loading || judging !== null || pendingSteerText !== null;
+  const hasReport = turns.some((t) => t.verdict?.kind === "report");
+  const shareUrl =
+    shareId && typeof window !== "undefined" ? `${window.location.origin}/d/${shareId}` : "";
   const turnsPerRound = agents.length || 1;
   const turnsDoneThisCycle = Math.max(0, agentTurnCount(turns) - autoplayCycleStart);
   const roundNumber = Math.floor(turnsDoneThisCycle / turnsPerRound) + 1;
@@ -418,7 +475,56 @@ export default function DebateSessionPage() {
             )}
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
-            {status === "active" && (
+            <div className="flex items-center gap-1.5">
+              <Popover open={shareOpen} onOpenChange={setShareOpen}>
+                <PopoverTrigger
+                  render={
+                    <button
+                      onClick={handleShare}
+                      title={shareId ? "This debate has a public link" : "Share this debate publicly"}
+                      className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                        shareId ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <Share2 className="h-3 w-3" />
+                      {shareId ? "Shared" : "Share"}
+                    </button>
+                  }
+                />
+                <PopoverContent className="w-80" align="end">
+                  {shareId ? (
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Public link</p>
+                      <p className="text-xs text-muted-foreground">
+                        Anyone with this link can read this debate.
+                        {shareCopied ? " Copied to clipboard." : ""}
+                      </p>
+                      <Input readOnly value={shareUrl} onFocus={(e) => e.target.select()} />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            navigator.clipboard
+                              .writeText(shareUrl)
+                              .then(() => setShareCopied(true))
+                              .catch(() => {});
+                          }}
+                        >
+                          {shareCopied ? "Copied" : "Copy"}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={handleUnshare}>
+                          Unshare
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      {shareBusy ? "Creating link…" : "Couldn't create the link — try again."}
+                    </p>
+                  )}
+                </PopoverContent>
+              </Popover>
+              {status === "active" && (
               <button
                 onClick={toggleJudge}
                 disabled={patchingJudge}
@@ -436,7 +542,8 @@ export default function DebateSessionPage() {
                 <Scale className="h-3 w-3" />
                 {judge?.enabled ? "Judge on" : "Judge off"}
               </button>
-            )}
+              )}
+            </div>
             <p className="whitespace-nowrap text-xs text-muted-foreground">
               this debate: ${debateCost.toFixed(4)}
             </p>
@@ -447,7 +554,9 @@ export default function DebateSessionPage() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto max-w-3xl space-y-6">
         {turns.map((turn) =>
-          turn.role === "judge" && turn.verdict?.kind === "intervention" ? (
+          turn.role === "judge" && turn.verdict?.kind === "report" ? (
+            <ReportCard key={turn.turn_index} turn={turn} />
+          ) : turn.role === "judge" && turn.verdict?.kind === "intervention" ? (
             <div key={turn.turn_index} className="mx-auto w-full max-w-xl">
               <div className="rounded-xl border px-4 py-3">
                 <p className="flex items-center gap-1.5 text-xs font-medium">
@@ -618,7 +727,9 @@ export default function DebateSessionPage() {
               <Scale className="h-3.5 w-3.5 animate-pulse" />
               {judging === "verdict"
                 ? "Judge is reviewing the round…"
-                : "Judge is preparing an interjection…"}
+                : judging === "report"
+                  ? "Judge is writing the closing report…"
+                  : "Judge is preparing an interjection…"}
             </p>
           </div>
         )}
@@ -713,27 +824,34 @@ export default function DebateSessionPage() {
                   <AlertDialogTrigger
                     render={
                       <Button variant="outline" disabled={loading || judging !== null}>
-                        End debate
+                        Conclude &amp; generate report
                       </Button>
                     }
                   />
                   <AlertDialogContent>
                     <AlertDialogHeader>
-                      <AlertDialogTitle>End this debate?</AlertDialogTitle>
+                      <AlertDialogTitle>Conclude this debate?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        You won&apos;t be able to add more turns after this. The transcript stays
-                        saved and you can still view it from the sidebar.
+                        No more rounds after this. The judge will write a closing report of where
+                        the debate landed, and the transcript stays saved in your sidebar.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={handleEnd}>End debate</AlertDialogAction>
+                      <AlertDialogAction onClick={handleEnd}>Conclude</AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">This debate has ended.</p>
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-muted-foreground">This debate has concluded.</p>
+                {!hasReport && judging === null && (
+                  <Button variant="outline" onClick={generateReport}>
+                    Generate closing report
+                  </Button>
+                )}
+              </div>
             )}
           </div>
         </div>
