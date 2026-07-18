@@ -10,6 +10,13 @@ def build_messages(agent, transcript, topic):
             messages.append(
                 {"role": "user", "content": f"A human moderator says: {turn['text']}"}
             )
+        elif turn.get("role") == "judge":
+            # Only interjections are spoken into the debate; verdicts are
+            # sideline notes for the human and the agents never see them.
+            if (turn.get("verdict") or {}).get("kind") == "intervention":
+                messages.append(
+                    {"role": "user", "content": f"The debate judge interjects: {turn['text']}"}
+                )
         elif turn["speaker"] == agent.name:
             messages.append({"role": "assistant", "content": turn["text"]})
         else:

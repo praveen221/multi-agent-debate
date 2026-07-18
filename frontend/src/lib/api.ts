@@ -41,13 +41,25 @@ export type AgentDraft = {
 };
 export type SourceResult = { title: string; url: string; snippet: string };
 export type Source = { query: string; results: SourceResult[] };
+export type JudgeConfig = { enabled: boolean; model: string };
+export type JudgeAction = "verdict" | "intervene" | "pressure_test" | "refocus";
+export type Verdict = {
+  kind: "verdict" | "intervention";
+  action?: JudgeAction;
+  direction?: string | null;
+  summary?: string;
+  agreements?: string[];
+  contentions?: string[];
+  suggested_action?: JudgeAction | "none";
+};
 export type Turn = {
   turn_index: number;
-  role?: "agent" | "human";
+  role?: "agent" | "human" | "judge";
   speaker: string;
   text: string;
   cost_usd?: number;
   sources?: Source[];
+  verdict?: Verdict | null;
 };
 export type ModelInfo = { id: string; pricing: Record<string, string> };
 export type Credits = { spent_usd: number; limit_usd: number };
@@ -58,7 +70,13 @@ export type SessionSummary = {
   created_at: string;
 };
 export type SessionDetail = {
-  session: { id: string; topic: string; status: string; agents: AgentDraft[] };
+  session: {
+    id: string;
+    topic: string;
+    status: string;
+    agents: AgentDraft[];
+    judge?: JudgeConfig | null;
+  };
   turns: Turn[];
 };
 export type StreamEvent =
@@ -82,11 +100,25 @@ export function getCredits(): Promise<Credits> {
   return apiFetch("/api/credits");
 }
 
-export function createSession(topic: string, agents: AgentDraft[]) {
+export function createSession(topic: string, agents: AgentDraft[], judge?: JudgeConfig) {
   return apiFetch("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ topic, agents }),
+    body: JSON.stringify({ topic, agents, judge }),
   }) as Promise<{ session_id: string; topic: string; agents: AgentDraft[] }>;
+}
+
+export function updateSessionJudge(sessionId: string, judge: JudgeConfig) {
+  return apiFetch(`/api/sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ judge }),
+  }) as Promise<{ judge: JudgeConfig }>;
+}
+
+export function runJudge(sessionId: string, action: JudgeAction, sourceTurnIndex?: number) {
+  return apiFetch(`/api/sessions/${sessionId}/judge`, {
+    method: "POST",
+    body: JSON.stringify({ action, source_turn_index: sourceTurnIndex }),
+  }) as Promise<Turn>;
 }
 
 export function listSessions(): Promise<SessionSummary[]> {
@@ -110,12 +142,14 @@ export function addSteerMessage(sessionId: string, text: string) {
 
 export async function nextTurnStream(
   sessionId: string,
+  expectedTurnIndex: number,
   onEvent: (event: StreamEvent) => void,
 ) {
   const headers = { "Content-Type": "application/json", ...(await authHeader()) };
   const res = await fetch(`${API_URL}/api/sessions/${sessionId}/next`, {
     method: "POST",
     headers,
+    body: JSON.stringify({ expected_turn_index: expectedTurnIndex }),
   });
 
   if (!res.ok || !res.body) await throwForResponse(res);

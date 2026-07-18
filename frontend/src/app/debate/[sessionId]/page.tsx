@@ -2,13 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import { Scale } from "lucide-react";
 import {
   getSession,
   nextTurnStream,
   endSession,
   addSteerMessage,
+  runJudge,
+  updateSessionJudge,
   ApiError,
   type AgentDraft,
+  type JudgeConfig,
   type Turn,
 } from "@/lib/api";
 import { agentAvatarClass } from "@/lib/agent-colors";
@@ -35,6 +39,35 @@ function agentTurnCount(list: Turn[]): number {
   return list.filter((t) => (t.role || "agent") === "agent").length;
 }
 
+// How many agent turns had happened as of the judge's most recent remark —
+// the baseline for "a full round has passed, time for the next verdict".
+function agentTurnsAtLastJudge(list: Turn[]): number {
+  let count = 0;
+  let last = 0;
+  for (const t of list) {
+    const role = t.role || "agent";
+    if (role === "agent") count++;
+    else if (role === "judge") last = count;
+  }
+  return last;
+}
+
+const DEFAULT_JUDGE_MODEL = "moonshotai/kimi-k2.5";
+
+const DIRECTION_LABELS: Record<string, string> = {
+  converging: "Converging",
+  diverging: "Diverging",
+  off_topic: "Drifting off-topic",
+  stalling: "Stalling",
+  balanced: "Balanced",
+};
+
+const JUDGE_ACTIONS = [
+  { action: "intervene", label: "Intervene with this" },
+  { action: "pressure_test", label: "Pressure-test" },
+  { action: "refocus", label: "Refocus" },
+] as const;
+
 export default function DebateSessionPage() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
@@ -53,6 +86,10 @@ export default function DebateSessionPage() {
   const [steerOpen, setSteerOpen] = useState(false);
   const [steerInput, setSteerInput] = useState("");
   const [pendingSteerText, setPendingSteerText] = useState<string | null>(null);
+  const [judge, setJudge] = useState<JudgeConfig | null>(null);
+  const [judging, setJudging] = useState<"verdict" | "intervene" | "pressure_test" | "refocus" | null>(null);
+  const [lastJudgedAt, setLastJudgedAt] = useState(0);
+  const [patchingJudge, setPatchingJudge] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLHeadingElement>(null);
   const [topicOverflowing, setTopicOverflowing] = useState(false);
@@ -67,6 +104,8 @@ export default function DebateSessionPage() {
         setStatus(session.status);
         setTurns(turns);
         setAgents(session.agents);
+        setJudge(session.judge || null);
+        setLastJudgedAt(agentTurnsAtLastJudge(turns));
         const startCount = turns.length === 0 ? 0 : agentTurnCount(turns);
         setAutoplayCycleStart(startCount);
         setAutoplayTarget(turns.length === 0 ? 2 * session.agents.length : startCount);
@@ -85,7 +124,7 @@ export default function DebateSessionPage() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [turns.length, loading]);
+  }, [turns.length, loading, judging]);
 
   useEffect(() => {
     function measure() {
@@ -136,7 +175,7 @@ export default function DebateSessionPage() {
     setLoading(true);
     setSearchTrace([]);
     try {
-      await nextTurnStream(sessionId, (event) => {
+      await nextTurnStream(sessionId, turns.length, (event) => {
         if (event.type === "search") {
           setSearchTrace((prev) => [...prev, event.query]);
         } else if (event.type === "turn") {
@@ -159,8 +198,23 @@ export default function DebateSessionPage() {
         setBudgetExceeded(true);
       }
       setError((e as Error).message);
+      // A broken stream can leave this page behind the database — the turn
+      // may have been saved before the stream died. Resync from the DB and
+      // halt autoplay, so a stale count can never pick the wrong speaker
+      // and the error stays visible instead of being wiped by a retry.
+      try {
+        const { session, turns: freshTurns } = await getSession(sessionId);
+        setStatus(session.status);
+        setJudge(session.judge || null);
+        setTurns(freshTurns);
+        setLastJudgedAt(agentTurnsAtLastJudge(freshTurns));
+        setAutoplayTarget(agentTurnCount(freshTurns));
+      } catch {
+        setAutoplayTarget(agentTurnCount(turns));
+      }
     } finally {
       setLoading(false);
+      setSearchTrace([]);
     }
   }
 
@@ -170,8 +224,18 @@ export default function DebateSessionPage() {
   // Nothing here ever interrupts an in-flight turn — it only ever decides
   // what happens next in the gap between turns.
   useEffect(() => {
-    if (loadingSession || loading || status !== "active" || agents.length === 0) return;
+    if (loadingSession || loading || judging !== null || status !== "active" || agents.length === 0)
+      return;
 
+    const count = agentTurnCount(turns);
+    if (count < autoplayTarget) {
+      handleNextTurn();
+      return;
+    }
+
+    // The round is complete. A queued steer message lands first and skips
+    // the verdict for this boundary — the user has already accounted for
+    // the judge's read; the judge reviews the round that responds to them.
     if (pendingSteerText !== null) {
       if (flushingSteerRef.current) return;
       flushingSteerRef.current = true;
@@ -203,19 +267,49 @@ export default function DebateSessionPage() {
       return;
     }
 
-    if (agentTurnCount(turns) < autoplayTarget) {
-      handleNextTurn();
+    // A full round of agents has spoken since the judge's last remark —
+    // time for a verdict. Waiting for autoplay to finish is what keeps
+    // the judge silent between the initial rounds.
+    if (judge?.enabled && count > 0 && count - lastJudgedAt >= agents.length) {
+      setJudging("verdict");
+      runJudge(sessionId, "verdict")
+        .then((turn) => setTurns((prev) => [...prev, turn]))
+        .catch((e) => setError((e as Error).message))
+        .finally(() => {
+          // Advance the baseline even on failure so a flaky judge model
+          // can't put this effect into a retry loop.
+          setLastJudgedAt(count);
+          setJudging(null);
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingSession, loading, status, turns, agents.length, autoplayTarget, pendingSteerText, sessionId]);
+  }, [loadingSession, loading, judging, status, turns, agents.length, autoplayTarget, pendingSteerText, judge, lastJudgedAt, sessionId]);
 
   async function handleEnd() {
     await endSession(sessionId).catch(() => {});
     setStatus("ended");
   }
 
-  function stopAfterCurrent() {
-    setAutoplayTarget(agentTurnCount(turns));
+  // Everything is round-based: this plays one full round of all agents via
+  // the same target-count mechanism as the initial autoplay, so the round
+  // label, stop button, and end-of-round judge verdict all come for free.
+  function startNextRound() {
+    const count = agentTurnCount(turns);
+    setAutoplayCycleStart(count);
+    setAutoplayTarget(count + agents.length);
+  }
+
+  function stopAfterRound() {
+    const count = agentTurnCount(turns);
+    const intoRound = (count - autoplayCycleStart) % agents.length;
+    // The in-flight (or partially played) round finishes; nothing beyond it.
+    // If we're exactly at a round boundary with nothing in flight, stop now.
+    const roundEnd =
+      loading || intoRound !== 0
+        ? autoplayCycleStart +
+          (Math.floor((count - autoplayCycleStart) / agents.length) + 1) * agents.length
+        : count;
+    setAutoplayTarget((prev) => Math.min(prev, roundEnd));
   }
 
   function submitSteer() {
@@ -226,7 +320,58 @@ export default function DebateSessionPage() {
     setSteerOpen(false);
   }
 
+  // The three buttons on a judge remark. The interjection enters the
+  // transcript, then a fresh round auto-plays — same restart mechanics as
+  // a human steer message.
+  async function judgeAct(
+    action: "intervene" | "pressure_test" | "refocus",
+    sourceTurnIndex?: number,
+  ) {
+    if (loading || judging !== null || pendingSteerText !== null || status !== "active") return;
+    setJudging(action);
+    try {
+      const turn = await runJudge(sessionId, action, sourceTurnIndex);
+      setTurns((prev) => {
+        const next = [...prev, turn];
+        const count = agentTurnCount(next);
+        setAutoplayCycleStart(count);
+        setAutoplayTarget(count + agents.length);
+        setLastJudgedAt(count);
+        return next;
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setJudging(null);
+    }
+  }
+
+  async function toggleJudge() {
+    if (patchingJudge || status !== "active") return;
+    const next: JudgeConfig = judge
+      ? { ...judge, enabled: !judge.enabled }
+      : { enabled: true, model: DEFAULT_JUDGE_MODEL };
+    setPatchingJudge(true);
+    try {
+      const res = await updateSessionJudge(sessionId, next);
+      setJudge(res.judge);
+      if (res.judge.enabled) {
+        // Let the judge read the room right away if a full round already
+        // exists, instead of waiting for the next one.
+        setLastJudgedAt(Math.max(0, agentTurnCount(turns) - agents.length));
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPatchingJudge(false);
+    }
+  }
+
   const midAutoplay = agentTurnCount(turns) < autoplayTarget;
+  // Action buttons only render on the newest judge remark — acting on an
+  // older one would inject a stale read of the debate.
+  const lastJudgeRemarkIndex = [...turns].reverse().find((t) => t.role === "judge")?.turn_index;
+  const judgeActionsDisabled = loading || judging !== null || pendingSteerText !== null;
   const turnsPerRound = agents.length || 1;
   const turnsDoneThisCycle = Math.max(0, agentTurnCount(turns) - autoplayCycleStart);
   const roundNumber = Math.floor(turnsDoneThisCycle / turnsPerRound) + 1;
@@ -272,16 +417,109 @@ export default function DebateSessionPage() {
               </h1>
             )}
           </div>
-          <p className="whitespace-nowrap text-xs text-muted-foreground">
-            this debate: ${debateCost.toFixed(4)}
-          </p>
+          <div className="flex shrink-0 flex-col items-end gap-1.5">
+            {status === "active" && (
+              <button
+                onClick={toggleJudge}
+                disabled={patchingJudge}
+                title={
+                  judge?.enabled
+                    ? "The judge reviews each round — click to turn it off"
+                    : "Bring in a judge to review each round"
+                }
+                className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
+                  judge?.enabled
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Scale className="h-3 w-3" />
+                {judge?.enabled ? "Judge on" : "Judge off"}
+              </button>
+            )}
+            <p className="whitespace-nowrap text-xs text-muted-foreground">
+              this debate: ${debateCost.toFixed(4)}
+            </p>
+          </div>
         </div>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto max-w-3xl space-y-6">
         {turns.map((turn) =>
-          turn.role === "human" ? (
+          turn.role === "judge" && turn.verdict?.kind === "intervention" ? (
+            <div key={turn.turn_index} className="mx-auto w-full max-w-xl">
+              <div className="rounded-xl border px-4 py-3">
+                <p className="flex items-center gap-1.5 text-xs font-medium">
+                  <Scale className="h-3.5 w-3.5" /> Judge interjects
+                </p>
+                <div className="mt-1.5">
+                  <TurnMarkdown text={turn.text} />
+                </div>
+              </div>
+            </div>
+          ) : turn.role === "judge" ? (
+            <div key={turn.turn_index} className="mx-auto w-full max-w-xl">
+              <div className="rounded-xl border bg-muted/40 px-4 py-3">
+                <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Scale className="h-3.5 w-3.5" /> Judge
+                  {turn.verdict?.direction && DIRECTION_LABELS[turn.verdict.direction] && (
+                    <span className="ml-1 rounded-full border px-2 py-0.5">
+                      {DIRECTION_LABELS[turn.verdict.direction]}
+                    </span>
+                  )}
+                </p>
+                <p className="mt-1.5 text-sm leading-relaxed">{turn.text}</p>
+                {((turn.verdict?.agreements?.length ?? 0) > 0 ||
+                  (turn.verdict?.contentions?.length ?? 0) > 0) && (
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                      Details
+                    </summary>
+                    <div className="mt-1.5 space-y-1.5 text-xs text-muted-foreground">
+                      {(turn.verdict?.agreements?.length ?? 0) > 0 && (
+                        <div>
+                          <p className="font-medium">Agreed on</p>
+                          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                            {turn.verdict!.agreements!.map((a, i) => (
+                              <li key={i}>{a}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {(turn.verdict?.contentions?.length ?? 0) > 0 && (
+                        <div>
+                          <p className="font-medium">Still contested</p>
+                          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                            {turn.verdict!.contentions!.map((c, i) => (
+                              <li key={i}>{c}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
+                {status === "active" && turn.turn_index === lastJudgeRemarkIndex && (
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {JUDGE_ACTIONS.map(({ action, label }) => (
+                      <Button
+                        key={action}
+                        size="sm"
+                        variant={turn.verdict?.suggested_action === action ? "default" : "outline"}
+                        disabled={judgeActionsDisabled}
+                        onClick={() =>
+                          judgeAct(action, action === "intervene" ? turn.turn_index : undefined)
+                        }
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : turn.role === "human" ? (
             <div key={turn.turn_index} className="flex w-full justify-end">
               <div className="max-w-[80%] rounded-2xl bg-secondary px-4 py-2">
                 <p className="mb-0.5 text-xs font-medium text-muted-foreground">You</p>
@@ -373,6 +611,17 @@ export default function DebateSessionPage() {
             </div>
           </div>
         )}
+
+        {judging && (
+          <div className="mx-auto w-full max-w-xl">
+            <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Scale className="h-3.5 w-3.5 animate-pulse" />
+              {judging === "verdict"
+                ? "Judge is reviewing the round…"
+                : "Judge is preparing an interjection…"}
+            </p>
+          </div>
+        )}
       </div>
       </div>
 
@@ -397,7 +646,7 @@ export default function DebateSessionPage() {
 
           {status === "active" && midAutoplay && (
             <p className="mb-2 text-xs text-muted-foreground">
-              Auto-playing · Round {roundNumber} · Turn {turnInRound} of {turnsPerRound}
+              Round {roundNumber} · Turn {turnInRound} of {turnsPerRound}
             </p>
           )}
 
@@ -433,9 +682,9 @@ export default function DebateSessionPage() {
                   Cancel
                 </Button>
               </div>
-              {loading && (
+              {(loading || midAutoplay || judging !== null) && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Will be added once the current response finishes.
+                  Will be added once this round finishes.
                 </p>
               )}
             </div>
@@ -445,12 +694,12 @@ export default function DebateSessionPage() {
             {status === "active" ? (
               <>
                 {midAutoplay ? (
-                  <Button variant="outline" onClick={stopAfterCurrent}>
-                    Stop after current response
+                  <Button variant="outline" onClick={stopAfterRound}>
+                    Stop after this round
                   </Button>
                 ) : (
-                  <Button onClick={handleNextTurn} disabled={loading || budgetExceeded}>
-                    {loading ? "Thinking…" : "Next turn"}
+                  <Button onClick={startNextRound} disabled={loading || judging !== null || budgetExceeded}>
+                    Next round
                   </Button>
                 )}
                 <Button
@@ -463,7 +712,7 @@ export default function DebateSessionPage() {
                 <AlertDialog>
                   <AlertDialogTrigger
                     render={
-                      <Button variant="outline" disabled={loading}>
+                      <Button variant="outline" disabled={loading || judging !== null}>
                         End debate
                       </Button>
                     }

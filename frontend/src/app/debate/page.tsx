@@ -2,8 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUp, Settings2 } from "lucide-react";
-import { listModels, createSession, ApiError, type AgentDraft, type ModelInfo } from "@/lib/api";
+import { ArrowUp, Scale, Settings2 } from "lucide-react";
+import {
+  listModels,
+  createSession,
+  ApiError,
+  type AgentDraft,
+  type JudgeConfig,
+  type ModelInfo,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,11 +41,14 @@ const DEFAULT_AGENTS: AgentDraft[] = [
   { name: "Agent B", model: "moonshotai/kimi-k2.5", use_search: true },
 ];
 
+const DEFAULT_JUDGE: JudgeConfig = { enabled: true, model: "moonshotai/kimi-k2.5" };
+
 export default function NewDebatePage() {
   const router = useRouter();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [topic, setTopic] = useState("");
   const [agents, setAgents] = useState<AgentDraft[]>(DEFAULT_AGENTS);
+  const [judge, setJudge] = useState<JudgeConfig>(DEFAULT_JUDGE);
   const [configOpen, setConfigOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +78,8 @@ export default function NewDebatePage() {
   const hasEmptyName = agents.some((a) => !a.name.trim());
   const hasEmptyModel = agents.some((a) => !a.model);
   const hasEmptyTopic = !topic.trim();
-  const configValid = !hasDuplicateNames && !hasEmptyName && !hasEmptyModel;
+  const judgeInvalid = judge.enabled && !judge.model;
+  const configValid = !hasDuplicateNames && !hasEmptyName && !hasEmptyModel && !judgeInvalid;
   const canStart = configValid && !hasEmptyTopic;
 
   const summary =
@@ -84,7 +95,7 @@ export default function NewDebatePage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await createSession(topic, agents);
+      const res = await createSession(topic, agents, judge);
       router.push(`/debate/${res.session_id}`);
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
@@ -234,6 +245,38 @@ export default function NewDebatePage() {
             <Button variant="outline" className="w-full" onClick={addAgent}>
               + Add agent
             </Button>
+
+            <div className="pt-2">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <Scale className="h-3.5 w-3.5" /> Judge
+              </p>
+              <Card className="border-dashed">
+                <CardContent className="space-y-3 pt-6">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={judge.enabled}
+                      onCheckedChange={(checked) => setJudge((j) => ({ ...j, enabled: checked }))}
+                    />
+                    <Label>Enable judge</Label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Reviews the debate after each round and can pressure-test a consensus or pull
+                    the agents back on topic. Its remarks stay out of the debate unless you ask it
+                    to step in.
+                  </p>
+                  {judge.enabled && (
+                    <div className="space-y-1.5">
+                      <Label>Model</Label>
+                      <ModelCombobox
+                        models={models}
+                        value={judge.model}
+                        onChange={(id) => setJudge((j) => ({ ...j, model: id }))}
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </SheetContent>
       </Sheet>

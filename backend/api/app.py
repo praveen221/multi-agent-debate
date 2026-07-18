@@ -12,13 +12,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import agent_factory
+import judge as judge_module
 import models as models_module
 from debate import build_messages
 
 from api.auth import get_current_user_id
 from api.credits import add_spend, check_within_budget, get_or_create_credit_row
 from api.db import get_db
-from api.schemas import CreateSessionRequest, SteerMessageRequest
+from api.schemas import (
+    CreateSessionRequest,
+    JudgeActionRequest,
+    NextTurnRequest,
+    SteerMessageRequest,
+    UpdateSessionRequest,
+)
 
 logger = logging.getLogger("mad")
 
@@ -75,6 +82,7 @@ def create_session(body: CreateSessionRequest, user_id: str = Depends(get_curren
                 "user_id": user_id,
                 "topic": body.topic,
                 "agents": [a.model_dump() for a in body.agents],
+                "judge": body.judge.model_dump() if body.judge else None,
                 "status": "active",
             }
         )
@@ -133,7 +141,11 @@ def get_session(session_id: str, user_id: str = Depends(get_current_user_id)):
 
 
 @app.post("/api/sessions/{session_id}/next")
-def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
+def next_turn(
+    session_id: str,
+    body: NextTurnRequest | None = None,
+    user_id: str = Depends(get_current_user_id),
+):
     session = _load_session(session_id, user_id)
     if session["status"] != "active":
         raise HTTPException(status_code=400, detail="Debate has already ended")
@@ -149,12 +161,21 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
         .execute()
         .data
     )
+    turn_index = len(transcript)
+
+    if body and body.expected_turn_index is not None and body.expected_turn_index != turn_index:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This page was out of sync with the debate — it has been refreshed. "
+                "Continue when ready."
+            ),
+        )
 
     agents = [agent_factory.build_agent(cfg) for cfg in session["agents"]]
     agent_turns = [t for t in transcript if t.get("role", "agent") == "agent"]
     next_agent = agents[len(agent_turns) % len(agents)]
     messages = build_messages(next_agent, transcript, session["topic"])
-    turn_index = len(transcript)
 
     def event_stream():
         # A StreamingResponse has already sent a 200 and started the body by
@@ -255,6 +276,92 @@ def add_steer_message(
         "role": "human",
         "speaker": "Moderator",
         "text": turn["text"],
+    }
+
+
+@app.patch("/api/sessions/{session_id}")
+def update_session(
+    session_id: str, body: UpdateSessionRequest, user_id: str = Depends(get_current_user_id)
+):
+    session = _load_session(session_id, user_id)
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="Debate has already ended")
+    db = get_db()
+    judge_config = body.judge.model_dump()
+    db.table("mad_sessions").update({"judge": judge_config}).eq("id", session_id).execute()
+    return {"judge": judge_config}
+
+
+@app.post("/api/sessions/{session_id}/judge")
+def judge_action(
+    session_id: str, body: JudgeActionRequest, user_id: str = Depends(get_current_user_id)
+):
+    session = _load_session(session_id, user_id)
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="Debate has already ended")
+    judge_config = session.get("judge") or {}
+    if not judge_config.get("enabled"):
+        raise HTTPException(status_code=400, detail="The judge is not enabled for this session")
+
+    db = get_db()
+    transcript = (
+        db.table("mad_turns")
+        .select("*")
+        .eq("session_id", session_id)
+        .order("turn_index")
+        .execute()
+        .data
+    )
+    turn_index = len(transcript)
+
+    if body.action == "intervene":
+        # No model call — promote an existing verdict's text into the debate.
+        source = next(
+            (
+                t
+                for t in transcript
+                if t["turn_index"] == body.source_turn_index and t.get("role") == "judge"
+            ),
+            None,
+        )
+        if source is None:
+            raise HTTPException(status_code=404, detail="Judge remark not found")
+        text = source["text"]
+        verdict = {"kind": "intervention", "action": "intervene"}
+        cost = 0.0
+    else:
+        check_within_budget(user_id)
+        if body.action == "verdict":
+            text, verdict, cost = judge_module.run_verdict(
+                judge_config["model"], session["topic"], transcript
+            )
+        else:  # pressure_test | refocus
+            text, cost = judge_module.run_interjection(
+                judge_config["model"], session["topic"], transcript, body.action
+            )
+            verdict = {"kind": "intervention", "action": body.action}
+
+    db.table("mad_turns").insert(
+        {
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "role": "judge",
+            "speaker": "Judge",
+            "text": text,
+            "cost_usd": cost,
+            "verdict": verdict,
+        }
+    ).execute()
+    if cost:
+        add_spend(user_id, cost)
+
+    return {
+        "turn_index": turn_index,
+        "role": "judge",
+        "speaker": "Judge",
+        "text": text,
+        "cost_usd": cost,
+        "verdict": verdict,
     }
 
 
