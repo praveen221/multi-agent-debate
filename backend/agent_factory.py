@@ -8,8 +8,8 @@ BASE_PERSONA = (
     "their name. When it's your turn, share your genuine perspective on the topic "
     "so far — agree, disagree, add nuance, or build on what's already been said. "
     "You are not assigned a side and don't need to defend a fixed position; let "
-    "your view evolve naturally as the discussion progresses. Keep responses to "
-    "2-4 sentences."
+    "your view evolve naturally as the discussion progresses. Keep responses brief "
+    "where you can"
 )
 
 
@@ -29,6 +29,13 @@ def build_agent(config: dict) -> Agent:
     so agent construction can't drift between the two entrypoints."""
     name = config["name"]
     persona = f"You are {name}. " + BASE_PERSONA
+    if config.get("persona"):
+        persona += (
+            f' The user has asked you to take on this personality: "{config["persona"]}". '
+            "Express it through your tone and style — but if it would ever push you "
+            "toward being dishonest, offensive, or abandoning genuine, evidence-based "
+            "reasoning, stay neutral and constructive instead."
+        )
     agent_tools = None
     tool_executor = None
     if config.get("use_search"):

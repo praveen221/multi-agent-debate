@@ -6,6 +6,7 @@ import { ArrowUp, Settings2 } from "lucide-react";
 import { listModels, createSession, ApiError, type AgentDraft, type ModelInfo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -204,6 +205,24 @@ export default function NewDebatePage() {
                     />
                     <Label>Give this agent web search</Label>
                   </div>
+
+                  <details>
+                    <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+                      + Persona (optional)
+                    </summary>
+                    <div className="mt-2 space-y-1">
+                      <Textarea
+                        value={agent.persona || ""}
+                        onChange={(e) => updateAgent(i, { persona: e.target.value })}
+                        maxLength={500}
+                        rows={2}
+                        placeholder="e.g. A cautious economist who prioritizes empirical evidence over theory"
+                      />
+                      <p className="text-right text-xs text-muted-foreground">
+                        {(agent.persona || "").length}/500
+                      </p>
+                    </div>
+                  </details>
                 </CardContent>
               </Card>
             ))}

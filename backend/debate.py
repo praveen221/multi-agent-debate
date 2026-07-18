@@ -6,7 +6,11 @@ def build_messages(agent, transcript, topic):
         return messages
 
     for turn in transcript:
-        if turn["speaker"] == agent.name:
+        if turn.get("role") == "human":
+            messages.append(
+                {"role": "user", "content": f"A human moderator says: {turn['text']}"}
+            )
+        elif turn["speaker"] == agent.name:
             messages.append({"role": "assistant", "content": turn["text"]})
         else:
             messages.append(

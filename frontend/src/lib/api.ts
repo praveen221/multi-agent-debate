@@ -33,8 +33,22 @@ async function apiFetch(path: string, init: RequestInit = {}) {
   return res.json();
 }
 
-export type AgentDraft = { name: string; model: string; use_search: boolean };
-export type Turn = { turn_index: number; speaker: string; text: string; cost_usd?: number };
+export type AgentDraft = {
+  name: string;
+  model: string;
+  use_search: boolean;
+  persona?: string;
+};
+export type SourceResult = { title: string; url: string; snippet: string };
+export type Source = { query: string; results: SourceResult[] };
+export type Turn = {
+  turn_index: number;
+  role?: "agent" | "human";
+  speaker: string;
+  text: string;
+  cost_usd?: number;
+  sources?: Source[];
+};
 export type ModelInfo = { id: string; pricing: Record<string, string> };
 export type Credits = { spent_usd: number; limit_usd: number };
 export type SessionSummary = {
@@ -52,9 +66,11 @@ export type StreamEvent =
   | {
       type: "turn";
       turn_index: number;
+      role?: "agent" | "human";
       speaker: string;
       text: string;
       cost_usd: number;
+      sources?: Source[];
       total_spent_usd: number;
     };
 
@@ -83,6 +99,13 @@ export function getSession(sessionId: string): Promise<SessionDetail> {
 
 export function endSession(sessionId: string) {
   return apiFetch(`/api/sessions/${sessionId}/end`, { method: "POST" });
+}
+
+export function addSteerMessage(sessionId: string, text: string) {
+  return apiFetch(`/api/sessions/${sessionId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  }) as Promise<{ turn_index: number; role: "human"; speaker: string; text: string }>;
 }
 
 export async function nextTurnStream(

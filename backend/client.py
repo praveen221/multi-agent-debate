@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from openai import OpenAI
 
@@ -11,6 +12,22 @@ PROVIDERS = {
         "api_key_env": "OPENROUTER_API_KEY",
     },
 }
+
+# Some OpenRouter-hosted models emit their *native* tool-call template as
+# plain content instead of a structured tool_calls response when the
+# provider they're routed to doesn't translate it properly — e.g. Kimi's
+# "<|tool_call_begin|>..." or DeepSeek's "<|DSML|>...invoke..." tags. When
+# that happens message.tool_calls is empty, so the loop below would treat
+# this leaked syntax as the agent's real answer. Detect it and retry once
+# without tools so the model can't attempt a call again.
+_LEAKED_TOOL_CALL_RE = re.compile(
+    r"<\s*\|?\s*/?\s*(tool_call|DSML|invoke)|tool_calls?_section|functions\.\w+:",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_leaked_tool_call(text: str) -> bool:
+    return bool(text) and bool(_LEAKED_TOOL_CALL_RE.search(text))
 
 
 def get_client(provider: str) -> OpenAI:
@@ -35,6 +52,9 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
         message = response.choices[0].message
 
         if not message.tool_calls:
+            if _looks_like_leaked_tool_call(message.content or ""):
+                retry = client.chat.completions.create(model=model, messages=full_messages)
+                return retry.choices[0].message.content
             return message.content
 
         full_messages.append(message.model_dump(exclude_unset=True))
@@ -59,16 +79,19 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
 def complete_streaming(client, model, system_prompt, messages, tools=None, tool_executor=None):
     """Same tool loop as complete(), but yields progress along the way:
     {"type": "tool_call", "name", "args"} for each tool call, then finally
-    {"type": "text", "text", "cost"} — cost is the sum of every completion
-    call's real USD cost (OpenRouter reports this on every response), since
-    one "turn" can involve several calls across the tool loop."""
+    {"type": "text", "text", "cost", "sources"} — cost is the sum of every
+    completion call's real USD cost (OpenRouter reports this on every
+    response), since one "turn" can involve several calls across the tool
+    loop. sources is every web_search call's {query, results} from this
+    turn, for persisting/displaying full grounding."""
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
     total_cost = 0.0
+    sources = []
 
     if not tools:
         response = client.chat.completions.create(model=model, messages=full_messages)
         total_cost += getattr(response.usage, "cost", 0) or 0
-        yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost}
+        yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost, "sources": sources}
         return
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -79,7 +102,17 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
         message = response.choices[0].message
 
         if not message.tool_calls:
-            yield {"type": "text", "text": message.content, "cost": total_cost}
+            if _looks_like_leaked_tool_call(message.content or ""):
+                retry = client.chat.completions.create(model=model, messages=full_messages)
+                total_cost += getattr(retry.usage, "cost", 0) or 0
+                yield {
+                    "type": "text",
+                    "text": retry.choices[0].message.content,
+                    "cost": total_cost,
+                    "sources": sources,
+                }
+                return
+            yield {"type": "text", "text": message.content, "cost": total_cost, "sources": sources}
             return
 
         full_messages.append(message.model_dump(exclude_unset=True))
@@ -88,6 +121,8 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
             args = json.loads(tool_call.function.arguments)
             yield {"type": "tool_call", "name": tool_call.function.name, "args": args}
             result = tool_executor(tool_call.function.name, args)
+            if tool_call.function.name == "web_search":
+                sources.append({"query": args.get("query", ""), "results": result})
             full_messages.append(
                 {
                     "role": "tool",
@@ -98,4 +133,4 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
 
     response = client.chat.completions.create(model=model, messages=full_messages)
     total_cost += getattr(response.usage, "cost", 0) or 0
-    yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost}
+    yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost, "sources": sources}

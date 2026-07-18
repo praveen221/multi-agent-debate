@@ -18,7 +18,7 @@ from debate import build_messages
 from api.auth import get_current_user_id
 from api.credits import add_spend, check_within_budget, get_or_create_credit_row
 from api.db import get_db
-from api.schemas import CreateSessionRequest
+from api.schemas import CreateSessionRequest, SteerMessageRequest
 
 logger = logging.getLogger("mad")
 
@@ -151,7 +151,8 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
     )
 
     agents = [agent_factory.build_agent(cfg) for cfg in session["agents"]]
-    next_agent = agents[len(transcript) % len(agents)]
+    agent_turns = [t for t in transcript if t.get("role", "agent") == "agent"]
+    next_agent = agents[len(agent_turns) % len(agents)]
     messages = build_messages(next_agent, transcript, session["topic"])
     turn_index = len(transcript)
 
@@ -163,6 +164,7 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
         try:
             final_text = None
             cost = 0.0
+            sources = []
             for event in next_agent.respond_streaming(messages):
                 if event["type"] == "tool_call" and event["name"] == "web_search":
                     query = event["args"].get("query", "")
@@ -170,14 +172,17 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
                 elif event["type"] == "text":
                     final_text = event["text"]
                     cost = event["cost"]
+                    sources = event.get("sources", [])
 
             db.table("mad_turns").insert(
                 {
                     "session_id": session_id,
                     "turn_index": turn_index,
+                    "role": "agent",
                     "speaker": next_agent.name,
                     "text": final_text,
                     "cost_usd": cost,
+                    "sources": sources,
                 }
             ).execute()
             total_spent = add_spend(user_id, cost)
@@ -186,9 +191,11 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
                     {
                         "type": "turn",
                         "turn_index": turn_index,
+                        "role": "agent",
                         "speaker": next_agent.name,
                         "text": final_text,
                         "cost_usd": cost,
+                        "sources": sources,
                         "total_spent_usd": total_spent,
                     }
                 )
@@ -210,6 +217,45 @@ def next_turn(session_id: str, user_id: str = Depends(get_current_user_id)):
             )
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@app.post("/api/sessions/{session_id}/messages")
+def add_steer_message(
+    session_id: str, body: SteerMessageRequest, user_id: str = Depends(get_current_user_id)
+):
+    session = _load_session(session_id, user_id)
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="Debate has already ended")
+
+    db = get_db()
+    turn_index = (
+        db.table("mad_turns")
+        .select("id", count="exact")
+        .eq("session_id", session_id)
+        .execute()
+        .count
+    )
+    result = (
+        db.table("mad_turns")
+        .insert(
+            {
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "role": "human",
+                "speaker": "Moderator",
+                "text": body.text,
+                "cost_usd": 0,
+            }
+        )
+        .execute()
+    )
+    turn = result.data[0]
+    return {
+        "turn_index": turn["turn_index"],
+        "role": "human",
+        "speaker": "Moderator",
+        "text": turn["text"],
+    }
 
 
 @app.post("/api/sessions/{session_id}/end")

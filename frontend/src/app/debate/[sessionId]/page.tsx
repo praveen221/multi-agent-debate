@@ -2,13 +2,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { getSession, nextTurnStream, endSession, ApiError, type AgentDraft, type Turn } from "@/lib/api";
+import {
+  getSession,
+  nextTurnStream,
+  endSession,
+  addSteerMessage,
+  ApiError,
+  type AgentDraft,
+  type Turn,
+} from "@/lib/api";
 import { agentAvatarClass } from "@/lib/agent-colors";
 import { shortModelName } from "@/lib/models";
 import { TurnMarkdown } from "@/components/turn-markdown";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,6 +30,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+
+function agentTurnCount(list: Turn[]): number {
+  return list.filter((t) => (t.role || "agent") === "agent").length;
+}
 
 export default function DebateSessionPage() {
   const params = useParams<{ sessionId: string }>();
@@ -34,13 +48,17 @@ export default function DebateSessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
   const [agents, setAgents] = useState<AgentDraft[]>([]);
+  const [autoplayTarget, setAutoplayTarget] = useState(0);
+  const [autoplayCycleStart, setAutoplayCycleStart] = useState(0);
+  const [steerOpen, setSteerOpen] = useState(false);
+  const [steerInput, setSteerInput] = useState("");
+  const [pendingSteerText, setPendingSteerText] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLHeadingElement>(null);
   const [topicOverflowing, setTopicOverflowing] = useState(false);
-  const autoStartedRef = useRef(false);
+  const flushingSteerRef = useRef(false);
 
   useEffect(() => {
-    autoStartedRef.current = false;
     setLoadingSession(true);
     setError(null);
     getSession(sessionId)
@@ -49,6 +67,9 @@ export default function DebateSessionPage() {
         setStatus(session.status);
         setTurns(turns);
         setAgents(session.agents);
+        const startCount = turns.length === 0 ? 0 : agentTurnCount(turns);
+        setAutoplayCycleStart(startCount);
+        setAutoplayTarget(turns.length === 0 ? 2 * session.agents.length : startCount);
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoadingSession(false));
@@ -123,9 +144,11 @@ export default function DebateSessionPage() {
             ...prev,
             {
               turn_index: event.turn_index,
+              role: event.role || "agent",
               speaker: event.speaker,
               text: event.text,
               cost_usd: event.cost_usd,
+              sources: event.sources,
             },
           ]);
           setSearchTrace([]);
@@ -141,18 +164,73 @@ export default function DebateSessionPage() {
     }
   }
 
+  // Single mechanism drives every kind of auto-continuation: the initial
+  // 2-round autoplay, the fresh round after a steer message, and even the
+  // very first turn (turns.length === 0 < autoplayTarget already holds).
+  // Nothing here ever interrupts an in-flight turn — it only ever decides
+  // what happens next in the gap between turns.
   useEffect(() => {
-    if (!loadingSession && status === "active" && turns.length === 0 && !autoStartedRef.current) {
-      autoStartedRef.current = true;
+    if (loadingSession || loading || status !== "active" || agents.length === 0) return;
+
+    if (pendingSteerText !== null) {
+      if (flushingSteerRef.current) return;
+      flushingSteerRef.current = true;
+      const text = pendingSteerText;
+      addSteerMessage(sessionId, text)
+        .then((newTurn) => {
+          setTurns((prev) => {
+            const next: Turn[] = [
+              ...prev,
+              {
+                turn_index: newTurn.turn_index,
+                role: "human",
+                speaker: newTurn.speaker,
+                text: newTurn.text,
+                cost_usd: 0,
+              },
+            ];
+            const restartCount = agentTurnCount(next);
+            setAutoplayCycleStart(restartCount);
+            setAutoplayTarget(restartCount + agents.length);
+            return next;
+          });
+        })
+        .catch((e) => setError((e as Error).message))
+        .finally(() => {
+          flushingSteerRef.current = false;
+          setPendingSteerText(null);
+        });
+      return;
+    }
+
+    if (agentTurnCount(turns) < autoplayTarget) {
       handleNextTurn();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingSession, status, turns.length]);
+  }, [loadingSession, loading, status, turns, agents.length, autoplayTarget, pendingSteerText, sessionId]);
 
   async function handleEnd() {
     await endSession(sessionId).catch(() => {});
     setStatus("ended");
   }
+
+  function stopAfterCurrent() {
+    setAutoplayTarget(agentTurnCount(turns));
+  }
+
+  function submitSteer() {
+    const text = steerInput.trim();
+    if (!text || pendingSteerText !== null) return;
+    setPendingSteerText(text);
+    setSteerInput("");
+    setSteerOpen(false);
+  }
+
+  const midAutoplay = agentTurnCount(turns) < autoplayTarget;
+  const turnsPerRound = agents.length || 1;
+  const turnsDoneThisCycle = Math.max(0, agentTurnCount(turns) - autoplayCycleStart);
+  const roundNumber = Math.floor(turnsDoneThisCycle / turnsPerRound) + 1;
+  const turnInRound = (turnsDoneThisCycle % turnsPerRound) + 1;
 
   if (loadingSession) {
     return (
@@ -202,36 +280,81 @@ export default function DebateSessionPage() {
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto max-w-3xl space-y-6">
-        {turns.map((turn) => (
-          <div key={turn.turn_index} className="flex w-full gap-3">
-            <div
-              title={avatarTitleFor(turn.speaker)}
-              className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(turn.speaker)}`}
-            >
-              {initialsForSpeaker(turn.speaker)}
+        {turns.map((turn) =>
+          turn.role === "human" ? (
+            <div key={turn.turn_index} className="flex w-full justify-end">
+              <div className="max-w-[80%] rounded-2xl bg-secondary px-4 py-2">
+                <p className="mb-0.5 text-xs font-medium text-muted-foreground">You</p>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed">{turn.text}</p>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="mb-1 text-sm">
-                <span className="font-medium">{turn.speaker}</span>
-                {agentConfigFor(turn.speaker) && (
-                  <span className="text-muted-foreground">
-                    {" "}
-                    · {shortModelName(agentConfigFor(turn.speaker)!.model)}
-                  </span>
+          ) : (
+            <div key={turn.turn_index} className="flex w-full gap-3">
+              <div
+                title={avatarTitleFor(turn.speaker)}
+                className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(turn.speaker)}`}
+              >
+                {initialsForSpeaker(turn.speaker)}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="mb-1 text-sm">
+                  <span className="font-medium">{turn.speaker}</span>
+                  {agentConfigFor(turn.speaker) && (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {shortModelName(agentConfigFor(turn.speaker)!.model)}
+                    </span>
+                  )}
+                </p>
+                <TurnMarkdown text={turn.text} />
+                {turn.sources && turn.sources.length > 0 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                      Sources ({turn.sources.reduce((n, s) => n + s.results.length, 0)})
+                    </summary>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {turn.sources.flatMap((s) =>
+                        s.results.map((r, i) => (
+                          <HoverCard key={`${s.query}-${i}`}>
+                            <HoverCardTrigger
+                              render={
+                                <a
+                                  href={r.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="max-w-[220px] truncate rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                                >
+                                  {r.title || r.url}
+                                </a>
+                              }
+                            />
+                            <HoverCardContent className="w-80">
+                              <p className="font-medium">{r.title}</p>
+                              <p className="mt-1 text-xs text-muted-foreground">{r.url}</p>
+                              {r.snippet && (
+                                <p className="mt-2 text-sm text-popover-foreground/90">
+                                  {r.snippet}
+                                </p>
+                              )}
+                            </HoverCardContent>
+                          </HoverCard>
+                        )),
+                      )}
+                    </div>
+                  </details>
                 )}
-              </p>
-              <TurnMarkdown text={turn.text} />
+              </div>
             </div>
-          </div>
-        ))}
+          ),
+        )}
 
         {loading && (
           <div className="flex w-full gap-3">
             <div
-              title={avatarTitleFor(agents[turns.length % (agents.length || 1)]?.name || "")}
-              className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(agents[turns.length % (agents.length || 1)]?.name || "")}`}
+              title={avatarTitleFor(agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "")}
+              className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "")}`}
             >
-              {initialsForSpeaker(agents[turns.length % (agents.length || 1)]?.name || "?")}
+              {initialsForSpeaker(agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "?")}
             </div>
             <div className="min-w-0 flex-1 space-y-2 pt-1 text-sm text-muted-foreground">
               {searchTrace.length === 0 ? (
@@ -272,11 +395,70 @@ export default function DebateSessionPage() {
             error && <p className="mb-4 text-sm text-destructive">{error}</p>
           )}
 
-          <div className="flex gap-3">
+          {status === "active" && midAutoplay && (
+            <p className="mb-2 text-xs text-muted-foreground">
+              Auto-playing · Round {roundNumber} · Turn {turnInRound} of {turnsPerRound}
+            </p>
+          )}
+
+          {steerOpen && (
+            <div className="mb-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  autoFocus
+                  value={steerInput}
+                  onChange={(e) => setSteerInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitSteer();
+                    } else if (e.key === "Escape") {
+                      setSteerOpen(false);
+                      setSteerInput("");
+                    }
+                  }}
+                  placeholder="Say something to steer the debate…"
+                />
+                <Button size="sm" onClick={submitSteer} disabled={!steerInput.trim()}>
+                  Send
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setSteerOpen(false);
+                    setSteerInput("");
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+              {loading && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Will be added once the current response finishes.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-3">
             {status === "active" ? (
               <>
-                <Button onClick={handleNextTurn} disabled={loading || budgetExceeded}>
-                  {loading ? "Thinking…" : "Next turn"}
+                {midAutoplay ? (
+                  <Button variant="outline" onClick={stopAfterCurrent}>
+                    Stop after current response
+                  </Button>
+                ) : (
+                  <Button onClick={handleNextTurn} disabled={loading || budgetExceeded}>
+                    {loading ? "Thinking…" : "Next turn"}
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  onClick={() => setSteerOpen((v) => !v)}
+                  disabled={pendingSteerText !== null}
+                >
+                  {pendingSteerText !== null ? "Message queued…" : "Interfere"}
                 </Button>
                 <AlertDialog>
                   <AlertDialogTrigger
