@@ -52,8 +52,8 @@ export default async function PublicDebatePage({
   if (!debate) notFound();
 
   return (
-    <main className="min-h-screen">
-      <div className="mx-auto max-w-3xl px-6 py-8">
+    <main className="min-h-dvh">
+      <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
         <header className="flex items-center justify-between">
           <Link href="/">
             <MadWorldLogo />

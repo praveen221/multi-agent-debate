@@ -114,9 +114,9 @@ export default function NewDebatePage() {
   }
 
   return (
-    <main className="flex h-full flex-col items-center justify-center overflow-y-auto px-6">
+    <main className="flex h-full flex-col items-center justify-center overflow-y-auto px-4 sm:px-6">
       <div className="w-full max-w-2xl">
-        <h1 className="mb-6 text-center text-3xl">What should they debate?</h1>
+        <h1 className="mb-6 text-center text-2xl sm:text-3xl">What should they debate?</h1>
 
         <InputGroup className="h-auto bg-card dark:bg-card">
           <InputGroupTextarea
@@ -131,9 +131,10 @@ export default function NewDebatePage() {
             <span
               className={
                 configValid
-                  ? "text-sm font-medium text-indigo-600 dark:text-indigo-400"
-                  : "text-sm font-medium text-destructive"
+                  ? "min-w-0 flex-1 truncate text-sm font-medium text-indigo-600 dark:text-indigo-400"
+                  : "min-w-0 flex-1 truncate text-sm font-medium text-destructive"
               }
+              title={configValid ? `Debating with ${summary}` : undefined}
             >
               {configValid ? `Debating with ${summary}` : "Fix agent configuration"}
             </span>

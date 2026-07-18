@@ -486,6 +486,19 @@ The system uses **hairline + soft drop**. Cards float above the off-white canvas
 - Feature grid: 3-up → 2-up → 1-up.
 - Gradient orbs reduce diameter at every breakpoint but never disappear.
 
+### Mad World App Conventions (binding — apply to every new surface)
+
+Every page and component must work at a 375px-wide viewport. The concrete rules this codebase follows:
+
+- **Viewport height**: use `h-dvh` / `min-h-dvh`, never `h-screen` / `min-h-screen` — mobile browser chrome breaks `100vh`-based layouts.
+- **Sidebar**: the debate sidebar is a static `aside` at `md:` and a left `Sheet` drawer below it, both rendering the same JSX (`app/debate/layout.tsx`); mobile gets a top bar with hamburger + logo + "+ New".
+- **Gutters**: `px-4` base, `sm:px-6` up. Vertical chrome padding steps the same way (e.g. `py-3` → `sm:py-4`).
+- **Header/footer rows**: stack on mobile — `flex-col` base, `sm:flex-row` up. Pill and button clusters use `flex-wrap` so nothing ever overflows horizontally.
+- **Overflowing text**: status lines, topics, and similar get `min-w-0` + `truncate`/`line-clamp`, with a `title` attribute carrying the full value.
+- **Sheets**: keep the default `w-3/4` mobile width (`sm:max-w-sm` cap); don't force fixed widths.
+- **Hover-only affordances** must degrade on touch: taps should still do something sensible (source chips are real links; model names are also shown inline, not only in tooltips).
+- Before shipping any UI change, sanity-check the affected page at ~375px.
+
 ## Iteration Guide
 
 1. Focus on a single component at a time.

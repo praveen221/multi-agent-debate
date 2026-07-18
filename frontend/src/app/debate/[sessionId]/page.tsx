@@ -444,8 +444,8 @@ export default function DebateSessionPage() {
 
   return (
     <main className="flex h-full flex-col">
-      <div className="shrink-0 border-b px-6 py-6">
-        <div className="mx-auto flex max-w-3xl items-start justify-between gap-4">
+      <div className="shrink-0 border-b px-4 py-4 sm:px-6 sm:py-6">
+        <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Topic
@@ -474,7 +474,7 @@ export default function DebateSessionPage() {
               </h1>
             )}
           </div>
-          <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-col sm:items-end sm:gap-1.5">
             <div className="flex items-center gap-1.5">
               <Popover open={shareOpen} onOpenChange={setShareOpen}>
                 <PopoverTrigger
@@ -551,7 +551,7 @@ export default function DebateSessionPage() {
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-3xl space-y-6">
         {turns.map((turn) =>
           turn.role === "judge" && turn.verdict?.kind === "report" ? (
@@ -736,7 +736,7 @@ export default function DebateSessionPage() {
       </div>
       </div>
 
-      <div className="shrink-0 border-t px-6 py-4">
+      <div className="shrink-0 border-t px-4 py-3 sm:px-6 sm:py-4">
         <div className="mx-auto max-w-3xl">
           {budgetExceeded ? (
             <Card className="mb-4 border-destructive/50">
@@ -801,7 +801,7 @@ export default function DebateSessionPage() {
             </div>
           )}
 
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2 sm:gap-3">
             {status === "active" ? (
               <>
                 {midAutoplay ? (
