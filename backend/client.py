@@ -16,18 +16,77 @@ PROVIDERS = {
 # Some OpenRouter-hosted models emit their *native* tool-call template as
 # plain content instead of a structured tool_calls response when the
 # provider they're routed to doesn't translate it properly — e.g. Kimi's
-# "<|tool_call_begin|>..." or DeepSeek's "<|DSML|>...invoke..." tags. When
-# that happens message.tool_calls is empty, so the loop below would treat
-# this leaked syntax as the agent's real answer. Detect it and retry once
-# without tools so the model can't attempt a call again.
+# "<tool_calls>...<invoke name=...>" / "<|tool_call_begin|>" or DeepSeek's
+# "<｜｜DSML｜｜tool_calls>" tags (note the fullwidth ｜ U+FF5C bars — plain
+# ASCII-pipe patterns miss them). Once one leaked turn is stored it gets
+# replayed into later context, so other models start mimicking the syntax.
+# Every reply therefore passes through _deliver() before being returned:
+# strip the leaked blocks, keep the surrounding real prose, and only if
+# nothing substantial survives ask once more with tools off.
+_LEAK_TAG = r"[^<>\n]{0,60}"
 _LEAKED_TOOL_CALL_RE = re.compile(
-    r"<\s*\|?\s*/?\s*(tool_call|DSML|invoke)|tool_calls?_section|functions\.\w+:",
+    r"<" + _LEAK_TAG + r"(?:tool_call|invoke|DSML)"
+    r"|tool_calls?_section|functions\.\w+:",
     re.IGNORECASE,
 )
+# Only removes blocks with a closing tag — an unterminated opener must never
+# risk swallowing real prose after it. Whatever a malformed block leaves
+# behind is caught by the stray-tag and functions-token passes below.
+_LEAK_BLOCK_RE = re.compile(
+    r"<" + _LEAK_TAG + r"tool_calls?" + _LEAK_TAG + r">"
+    r".{0,1500}?"
+    r"<" + _LEAK_TAG + r"tool_calls?" + _LEAK_TAG + r">",
+    re.IGNORECASE | re.DOTALL,
+)
+_LEAK_STRAY_TAG_RE = re.compile(
+    r"</?" + _LEAK_TAG + r"(?:invoke|parameter|DSML|tool_call)" + _LEAK_TAG + r">",
+    re.IGNORECASE,
+)
+# Kimi's section format names the tool as "functions.web_search:7" between tags.
+_LEAK_FN_TOKEN_RE = re.compile(r"functions\.\w+:\d*")
+
+# A stripped reply shorter than this is just the pre-search preamble
+# ("Let me check the latest numbers.") — not worth showing as a turn.
+_MIN_SURVIVING_CHARS = 200
+
+_NO_TOOLS_NUDGE = {
+    "role": "user",
+    "content": (
+        "(system note: the web_search tool is unavailable for this one reply. "
+        "Answer directly from the discussion so far and what you already know. "
+        "Do not emit any tool-call syntax.)"
+    ),
+}
 
 
 def _looks_like_leaked_tool_call(text: str) -> bool:
     return bool(text) and bool(_LEAKED_TOOL_CALL_RE.search(text))
+
+
+def strip_leaked_tool_calls(text: str) -> str:
+    text = _LEAK_BLOCK_RE.sub("", text)
+    text = _LEAK_STRAY_TAG_RE.sub("", text)
+    text = _LEAK_FN_TOKEN_RE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    # A removed block often leaves its "---" separator dangling at the top.
+    return re.sub(r"^(?:-{3,}\s*)+", "", text)
+
+
+def _deliver(client, model, full_messages, text):
+    """Final gate for every reply. Returns (clean_text, extra_cost)."""
+    if not _looks_like_leaked_tool_call(text or ""):
+        return text, 0.0
+    stripped = strip_leaked_tool_calls(text)
+    if len(stripped) >= _MIN_SURVIVING_CHARS:
+        return stripped, 0.0
+    retry = client.chat.completions.create(
+        model=model, messages=full_messages + [_NO_TOOLS_NUDGE]
+    )
+    cost = getattr(retry.usage, "cost", 0) or 0
+    clean = strip_leaked_tool_calls(retry.choices[0].message.content or "")
+    # If even the retry came back as pure tool syntax, fall back to whatever
+    # prose the original had rather than an empty turn.
+    return (clean or stripped), cost
 
 
 def get_client(provider: str) -> OpenAI:
@@ -43,7 +102,8 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
 
     if not tools:
         response = client.chat.completions.create(model=model, messages=full_messages)
-        return response.choices[0].message.content
+        text, _ = _deliver(client, model, full_messages, response.choices[0].message.content)
+        return text
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
@@ -52,10 +112,8 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
         message = response.choices[0].message
 
         if not message.tool_calls:
-            if _looks_like_leaked_tool_call(message.content or ""):
-                retry = client.chat.completions.create(model=model, messages=full_messages)
-                return retry.choices[0].message.content
-            return message.content
+            text, _ = _deliver(client, model, full_messages, message.content)
+            return text
 
         full_messages.append(message.model_dump(exclude_unset=True))
 
@@ -73,7 +131,8 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
     # Hit the round cap right after executing a round of tool calls — the model
     # hasn't responded to those results yet. Force one final answer, no more tools.
     response = client.chat.completions.create(model=model, messages=full_messages)
-    return response.choices[0].message.content
+    text, _ = _deliver(client, model, full_messages, response.choices[0].message.content)
+    return text
 
 
 def complete_streaming(client, model, system_prompt, messages, tools=None, tool_executor=None):
@@ -91,7 +150,9 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
     if not tools:
         response = client.chat.completions.create(model=model, messages=full_messages)
         total_cost += getattr(response.usage, "cost", 0) or 0
-        yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost, "sources": sources}
+        text, extra = _deliver(client, model, full_messages, response.choices[0].message.content)
+        total_cost += extra
+        yield {"type": "text", "text": text, "cost": total_cost, "sources": sources}
         return
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -102,17 +163,9 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
         message = response.choices[0].message
 
         if not message.tool_calls:
-            if _looks_like_leaked_tool_call(message.content or ""):
-                retry = client.chat.completions.create(model=model, messages=full_messages)
-                total_cost += getattr(retry.usage, "cost", 0) or 0
-                yield {
-                    "type": "text",
-                    "text": retry.choices[0].message.content,
-                    "cost": total_cost,
-                    "sources": sources,
-                }
-                return
-            yield {"type": "text", "text": message.content, "cost": total_cost, "sources": sources}
+            text, extra = _deliver(client, model, full_messages, message.content)
+            total_cost += extra
+            yield {"type": "text", "text": text, "cost": total_cost, "sources": sources}
             return
 
         full_messages.append(message.model_dump(exclude_unset=True))
@@ -133,4 +186,6 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
 
     response = client.chat.completions.create(model=model, messages=full_messages)
     total_cost += getattr(response.usage, "cost", 0) or 0
-    yield {"type": "text", "text": response.choices[0].message.content, "cost": total_cost, "sources": sources}
+    text, extra = _deliver(client, model, full_messages, response.choices[0].message.content)
+    total_cost += extra
+    yield {"type": "text", "text": text, "cost": total_cost, "sources": sources}
