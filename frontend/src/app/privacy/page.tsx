@@ -32,6 +32,16 @@ export default function PrivacyPage() {
           costs in API spend, attributed to your account, to enforce a fair-use credit limit.
         </p>
         <p>
+          <strong className="text-foreground">Deleting a discussion.</strong> Deleting a
+          discussion removes it from your account and immediately disables any share link it
+          had. A hidden copy may be retained for a while to understand how the product is used;
+          if you want it fully erased, email us and we&apos;ll do it.
+        </p>
+        <p>
+          <strong className="text-foreground">Feedback.</strong> Anything you send through the
+          in-app feedback form is stored with your account so we can follow up.
+        </p>
+        <p>
           <strong className="text-foreground">Nobody else gets this.</strong> Nothing here is
           sold, shared, or used for anything beyond running the app and keeping usage within
           reasonable limits.

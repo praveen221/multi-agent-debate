@@ -14,9 +14,21 @@ const geistMono = Geist_Mono({
   weight: ["400"],
 });
 
+// Absolute base for og:image/twitter:image URLs — link previews break if
+// these resolve to localhost. Vercel injects VERCEL_PROJECT_PRODUCTION_URL
+// at build time; NEXT_PUBLIC_SITE_URL can override it (e.g. custom domain).
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : "http://localhost:3000");
+
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
   title: "Mad World",
   description: "AI models discuss your question — and argue instead of agreeing with you.",
+  // The large-card hint for X; the image itself comes from twitter-image.tsx.
+  twitter: { card: "summary_large_image" },
 };
 
 export default function RootLayout({

@@ -26,7 +26,8 @@ class CreateSessionRequest(BaseModel):
 
 
 class UpdateSessionRequest(BaseModel):
-    judge: JudgeConfig
+    judge: JudgeConfig | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class SteerMessageRequest(BaseModel):
@@ -44,3 +45,13 @@ class JudgeActionRequest(BaseModel):
     action: Literal["verdict", "intervene", "pressure_test", "refocus", "report"]
     # For 'intervene': the verdict turn whose text gets spoken into the debate.
     source_turn_index: int | None = None
+
+
+class FeedbackRequest(BaseModel):
+    category: Literal["bug", "idea", "other"] | None = None
+    # A rating prompt may send only stars (empty message), the manual box only
+    # text — one of the two must be present.
+    message: str = Field(default="", max_length=4000)
+    rating: int | None = Field(default=None, ge=1, le=5)
+    trigger_point: Literal["manual", "conclude", "rounds"] = "manual"
+    page: str | None = Field(default=None, max_length=200)

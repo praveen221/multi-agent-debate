@@ -8,13 +8,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import agent_factory
 import judge as judge_module
 import models as models_module
+import titles as titles_module
 from debate import build_messages
 
 from api.auth import get_current_user_id
@@ -22,6 +23,7 @@ from api.credits import add_spend, check_within_budget, get_or_create_credit_row
 from api.db import get_db
 from api.schemas import (
     CreateSessionRequest,
+    FeedbackRequest,
     JudgeActionRequest,
     NextTurnRequest,
     SteerMessageRequest,
@@ -72,8 +74,24 @@ def get_credits(user_id: str = Depends(get_current_user_id)):
     return {"spent_usd": row["spent_usd"], "limit_usd": row["limit_usd"]}
 
 
+def _generate_and_store_title(session_id: str, topic: str, user_id: str) -> None:
+    """Background task after session creation. Only fills the title if it's
+    still empty, so a user rename that lands first is never overwritten."""
+    title, cost = titles_module.generate_title(topic)
+    if title:
+        get_db().table("mad_sessions").update({"title": title}).eq("id", session_id).is_(
+            "title", "null"
+        ).execute()
+    if cost:
+        add_spend(user_id, cost)
+
+
 @app.post("/api/sessions")
-def create_session(body: CreateSessionRequest, user_id: str = Depends(get_current_user_id)):
+def create_session(
+    body: CreateSessionRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+):
     check_within_budget(user_id)
     db = get_db()
     result = (
@@ -90,6 +108,7 @@ def create_session(body: CreateSessionRequest, user_id: str = Depends(get_curren
         .execute()
     )
     session = result.data[0]
+    background_tasks.add_task(_generate_and_store_title, session["id"], body.topic, user_id)
     return {"session_id": session["id"], "topic": session["topic"], "agents": session["agents"]}
 
 
@@ -98,8 +117,9 @@ def list_sessions(user_id: str = Depends(get_current_user_id)):
     db = get_db()
     rows = (
         db.table("mad_sessions")
-        .select("id, topic, status, created_at")
+        .select("id, topic, title, status, created_at")
         .eq("user_id", user_id)
+        .is_("deleted_at", "null")
         .order("created_at", desc=True)
         .execute()
         .data
@@ -108,6 +128,7 @@ def list_sessions(user_id: str = Depends(get_current_user_id)):
         {
             "session_id": r["id"],
             "topic": r["topic"],
+            "title": r["title"],
             "status": r["status"],
             "created_at": r["created_at"],
         }
@@ -119,7 +140,7 @@ def _load_session(session_id: str, user_id: str) -> dict:
     db = get_db()
     result = db.table("mad_sessions").select("*").eq("id", session_id).maybe_single().execute()
     session = result.data if result else None
-    if session is None:
+    if session is None or session.get("deleted_at"):
         raise HTTPException(status_code=404, detail="Session not found")
     if session["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="Not your session")
@@ -285,12 +306,47 @@ def update_session(
     session_id: str, body: UpdateSessionRequest, user_id: str = Depends(get_current_user_id)
 ):
     session = _load_session(session_id, user_id)
-    if session["status"] != "active":
-        raise HTTPException(status_code=400, detail="Debate has already ended")
-    db = get_db()
-    judge_config = body.judge.model_dump()
-    db.table("mad_sessions").update({"judge": judge_config}).eq("id", session_id).execute()
-    return {"judge": judge_config}
+    updates: dict = {}
+    if body.judge is not None:
+        # Toggling the judge only makes sense on a live discussion; renaming
+        # is fine at any point.
+        if session["status"] != "active":
+            raise HTTPException(status_code=400, detail="Debate has already ended")
+        updates["judge"] = body.judge.model_dump()
+    if body.title is not None:
+        updates["title"] = body.title.strip()
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    get_db().table("mad_sessions").update(updates).eq("id", session_id).execute()
+    return updates
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str, user_id: str = Depends(get_current_user_id)):
+    """Soft delete: hidden from the account and any share link dies, but the
+    row stays (see the privacy page's data-retention wording)."""
+    _load_session(session_id, user_id)
+    get_db().table("mad_sessions").update(
+        {"deleted_at": datetime.now(timezone.utc).isoformat(), "share_id": None}
+    ).eq("id", session_id).execute()
+    return {"deleted": True}
+
+
+@app.post("/api/feedback")
+def submit_feedback(body: FeedbackRequest, user_id: str = Depends(get_current_user_id)):
+    if not body.message.strip() and body.rating is None:
+        raise HTTPException(status_code=400, detail="Nothing to submit")
+    get_db().table("mad_feedback").insert(
+        {
+            "user_id": user_id,
+            "category": body.category,
+            "message": body.message.strip(),
+            "rating": body.rating,
+            "trigger_point": body.trigger_point,
+            "page": body.page,
+        }
+    ).execute()
+    return {"ok": True}
 
 
 DEFAULT_JUDGE_MODEL = "moonshotai/kimi-k2.5"
@@ -440,7 +496,7 @@ def get_public_debate(share_id: str):
         db.table("mad_sessions").select("*").eq("share_id", share_id).maybe_single().execute()
     )
     session = result.data if result else None
-    if session is None:
+    if session is None or session.get("deleted_at"):
         raise HTTPException(status_code=404, detail="Debate not found")
     turns = (
         db.table("mad_turns")

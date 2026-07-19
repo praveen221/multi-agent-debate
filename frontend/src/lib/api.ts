@@ -73,9 +73,11 @@ export type Credits = { spent_usd: number; limit_usd: number };
 export type SessionSummary = {
   session_id: string;
   topic: string;
+  title: string | null;
   status: string;
   created_at: string;
 };
+export type FeedbackCategory = "bug" | "idea" | "other";
 export type SessionDetail = {
   session: {
     id: string;
@@ -145,6 +147,34 @@ export function runJudge(sessionId: string, action: JudgeAction, sourceTurnIndex
 
 export function listSessions(): Promise<SessionSummary[]> {
   return apiFetch("/api/sessions");
+}
+
+export function renameSession(sessionId: string, title: string) {
+  return apiFetch(`/api/sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  }) as Promise<{ title: string }>;
+}
+
+export function deleteSession(sessionId: string) {
+  return apiFetch(`/api/sessions/${sessionId}`, { method: "DELETE" }) as Promise<{
+    deleted: boolean;
+  }>;
+}
+
+export type FeedbackTrigger = "manual" | "conclude" | "rounds";
+
+export function sendFeedback(
+  message: string,
+  category: FeedbackCategory | null,
+  page: string,
+  rating?: number,
+  triggerPoint: FeedbackTrigger = "manual",
+) {
+  return apiFetch("/api/feedback", {
+    method: "POST",
+    body: JSON.stringify({ message, category, page, rating, trigger_point: triggerPoint }),
+  }) as Promise<{ ok: boolean }>;
 }
 
 export function getSession(sessionId: string): Promise<SessionDetail> {

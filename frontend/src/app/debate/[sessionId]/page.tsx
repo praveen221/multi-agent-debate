@@ -18,6 +18,8 @@ import {
   type Turn,
 } from "@/lib/api";
 import { ReportCard } from "@/components/report-card";
+import { RatingPrompt } from "@/components/rating-prompt";
+import { markPrompted, shouldAutoPrompt } from "@/lib/rating-governor";
 import { agentAvatarClass } from "@/lib/agent-colors";
 import { shortModelName } from "@/lib/models";
 import { TurnMarkdown } from "@/components/turn-markdown";
@@ -99,6 +101,7 @@ export default function DebateSessionPage() {
   const [shareOpen, setShareOpen] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [ratingPrompt, setRatingPrompt] = useState<"conclude" | "rounds" | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLHeadingElement>(null);
   const [topicOverflowing, setTopicOverflowing] = useState(false);
@@ -134,7 +137,7 @@ export default function DebateSessionPage() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [turns.length, loading, judging]);
+  }, [turns.length, loading, judging, ratingPrompt]);
 
   useEffect(() => {
     function measure() {
@@ -300,9 +303,34 @@ export default function DebateSessionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingSession, loading, judging, status, turns, agents.length, autoplayTarget, pendingSteerText, judge, lastJudgedAt, sessionId]);
 
+  // Deep-engagement pulse check: once a discussion passes 4 completed rounds
+  // (2 automatic + 2 user-triggered), show an inline rating card at the next
+  // idle round boundary. Same governor as the conclude prompt, so whichever
+  // moment comes first is the only one that asks.
+  useEffect(() => {
+    if (loadingSession || loading || judging !== null || status !== "active") return;
+    if (ratingPrompt !== null || agents.length === 0) return;
+    const count = agentTurnCount(turns);
+    if (
+      count >= agents.length * 4 &&
+      count % agents.length === 0 &&
+      count >= autoplayTarget &&
+      shouldAutoPrompt(sessionId)
+    ) {
+      markPrompted(sessionId);
+      setRatingPrompt("rounds");
+    }
+  }, [loadingSession, loading, judging, status, turns, agents.length, autoplayTarget, ratingPrompt, sessionId]);
+
   async function handleEnd() {
     await endSession(sessionId).catch(() => {});
     setStatus("ended");
+    // The report takes a few seconds — that wait is the ideal moment for a
+    // one-tap rating (governed: max one auto-prompt per discussion).
+    if (shouldAutoPrompt(sessionId)) {
+      markPrompted(sessionId);
+      setRatingPrompt("conclude");
+    }
     generateReport();
   }
 
@@ -779,6 +807,12 @@ export default function DebateSessionPage() {
                   ? "Judge is writing the closing report…"
                   : "Judge is preparing an interjection…"}
             </p>
+          </div>
+        )}
+
+        {ratingPrompt && (
+          <div className="mx-auto w-full max-w-xl">
+            <RatingPrompt trigger={ratingPrompt} onClose={() => setRatingPrompt(null)} />
           </div>
         )}
       </div>
