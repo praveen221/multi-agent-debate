@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUp, Scale, Settings2 } from "lucide-react";
 import {
@@ -32,14 +32,7 @@ import {
 } from "@/components/ui/sheet";
 import { ModelCombobox } from "@/components/model-combobox";
 import { shortModelName } from "@/lib/models";
-
-const TOPIC_PLACEHOLDER =
-  "What should the agents debate? e.g. Can a debate between multiple models lead to more factually correct research than using one model alone?";
-
-const DEFAULT_AGENTS: AgentDraft[] = [
-  { name: "Agent A", model: "deepseek/deepseek-v4-pro", use_search: true },
-  { name: "Agent B", model: "moonshotai/kimi-k2.5", use_search: true },
-];
+import { DEFAULT_AGENTS, TEMPLATES, type DebateTemplate } from "@/lib/templates";
 
 const DEFAULT_JUDGE: JudgeConfig = { enabled: true, model: "moonshotai/kimi-k2.5" };
 
@@ -49,7 +42,12 @@ export default function NewDebatePage() {
   const [topic, setTopic] = useState("");
   const [agents, setAgents] = useState<AgentDraft[]>(DEFAULT_AGENTS);
   const [judge, setJudge] = useState<JudgeConfig>(DEFAULT_JUDGE);
+  const [templateId, setTemplateId] = useState("open");
   const [configOpen, setConfigOpen] = useState(false);
+  const topicRef = useRef<HTMLTextAreaElement>(null);
+  // Which stance fields the user has hand-edited — those stop live-syncing
+  // with the template composition. Clearing a field hands it back.
+  const stanceEditedRef = useRef<boolean[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
@@ -66,12 +64,55 @@ export default function NewDebatePage() {
 
   function addAgent() {
     const letter = String.fromCharCode(65 + agents.length);
-    setAgents((prev) => [...prev, { name: `Agent ${letter}`, model: "", use_search: false }]);
+    // In an advise room, a new agent joins as another advisor; in advocate
+    // or open rooms it joins as a neutral participant (a free evaluator
+    // between two advocates is useful structure, not a bug).
+    const adviseRoom = agents.length > 0 && agents.every((a) => a.mode === "advise");
+    setAgents((prev) => [
+      ...prev,
+      {
+        name: `${adviseRoom ? "Advisor" : "Agent"} ${letter}`,
+        model: "",
+        use_search: false,
+        ...(adviseRoom ? { mode: "advise" as const } : {}),
+      },
+    ]);
   }
 
   function removeAgent(i: number) {
     setAgents((prev) => prev.filter((_, idx) => idx !== i));
   }
+
+  // Selecting a template never types into the topic box — it swaps the
+  // placeholder and agent lineup (advocate templates arrive with stances
+  // already filled, which then track the typed subject live).
+  function applyTemplate(template: DebateTemplate) {
+    setTemplateId(template.id);
+    setTopic("");
+    stanceEditedRef.current = [];
+    const composed = template.composeStances?.("") ?? [];
+    setAgents(template.agents.map((a, i) => ({ ...a, stance: composed[i] || a.stance })));
+    requestAnimationFrame(() => topicRef.current?.focus());
+  }
+
+  const activeTemplate = TEMPLATES.find((t) => t.id === templateId) ?? TEMPLATES[0];
+  const composedStances = activeTemplate.composeStances?.(topic.trim()) ?? [];
+  const personaPlaceholder =
+    activeTemplate.personaPlaceholder ??
+    "e.g. A cautious economist who prioritizes empirical evidence over theory";
+
+  // Keep un-edited stance fields tracking the typed subject.
+  useEffect(() => {
+    const compose = activeTemplate.composeStances;
+    if (!compose) return;
+    const composed = compose(topic.trim());
+    setAgents((prev) =>
+      prev.map((a, i) =>
+        composed[i] && !stanceEditedRef.current[i] ? { ...a, stance: composed[i] } : a,
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topic, templateId]);
 
   const trimmedNames = agents.map((a) => a.name.trim().toLowerCase());
   const hasDuplicateNames = new Set(trimmedNames).size !== trimmedNames.length;
@@ -95,7 +136,15 @@ export default function NewDebatePage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await createSession(topic, agents, judge);
+      const input = topic.trim();
+      const finalTopic = activeTemplate.composeTopic ? activeTemplate.composeTopic(input) : input;
+      const stances = activeTemplate.composeStances?.(input) ?? [];
+      // Composed stances carry the user's actual subject; hand-written
+      // stances in the config sheet always win over composition.
+      const finalAgents = agents.map((a, i) =>
+        !a.stance && stances[i] ? { ...a, stance: stances[i] } : a,
+      );
+      const res = await createSession(finalTopic, finalAgents, judge);
       router.push(`/debate/${res.session_id}`);
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {
@@ -116,11 +165,12 @@ export default function NewDebatePage() {
   return (
     <main className="flex h-full flex-col items-center justify-center overflow-y-auto px-4 sm:px-6">
       <div className="w-full max-w-2xl">
-        <h1 className="mb-6 text-center text-2xl sm:text-3xl">What should they debate?</h1>
+        <h1 className="mb-6 text-center text-2xl sm:text-3xl">What should we discuss?</h1>
 
         <InputGroup className="h-auto bg-card dark:bg-card">
           <InputGroupTextarea
-            placeholder={TOPIC_PLACEHOLDER}
+            ref={topicRef}
+            placeholder={activeTemplate.placeholder}
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -131,12 +181,12 @@ export default function NewDebatePage() {
             <span
               className={
                 configValid
-                  ? "min-w-0 flex-1 truncate text-sm font-medium text-indigo-600 dark:text-indigo-400"
-                  : "min-w-0 flex-1 truncate text-sm font-medium text-destructive"
+                  ? "min-w-0 flex-1 truncate text-sm text-foreground"
+                  : "min-w-0 flex-1 truncate text-sm text-destructive"
               }
-              title={configValid ? `Debating with ${summary}` : undefined}
+              title={configValid ? `Discussing with ${summary}` : undefined}
             >
-              {configValid ? `Debating with ${summary}` : "Fix agent configuration"}
+              {configValid ? `Discussing with ${summary}` : "Fix agent configuration"}
             </span>
             <InputGroupButton
               variant="ghost"
@@ -152,17 +202,40 @@ export default function NewDebatePage() {
               size="icon-sm"
               disabled={loading || !canStart || budgetExceeded}
               onClick={startDebate}
-              aria-label="Start debate"
+              aria-label="Start discussion"
             >
               <ArrowUp className="h-4 w-4" />
             </InputGroupButton>
           </InputGroupAddon>
         </InputGroup>
 
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {TEMPLATES.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => applyTemplate(t)}
+              title={t.label}
+              className={`truncate rounded-full border px-3 py-1.5 text-center text-xs transition-colors ${
+                templateId === t.id
+                  ? "border-foreground text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTemplate.composeTopic && topic.trim() && (
+          <p className="mt-2 truncate text-center text-xs text-muted-foreground">
+            Will start: &ldquo;{activeTemplate.composeTopic(topic.trim())}&rdquo;
+          </p>
+        )}
+
         {budgetExceeded ? (
           <Card className="mt-4 border-destructive/50">
             <CardContent className="pt-6 text-sm">
-              <p className="font-medium text-destructive">Debate credit used up</p>
+              <p className="font-medium text-destructive">Credits used up</p>
               <p className="mt-1 text-muted-foreground">
                 {error} Email{" "}
                 <a className="underline" href="mailto:mpj1391996@gmail.com">
@@ -180,7 +253,7 @@ export default function NewDebatePage() {
       <Sheet open={configOpen} onOpenChange={setConfigOpen}>
         <SheetContent className="flex flex-col overflow-hidden">
           <SheetHeader className="pt-6 pr-10">
-            <SheetTitle>Debate configuration</SheetTitle>
+            <SheetTitle>Discussion configuration</SheetTitle>
             <SheetDescription>Choose the agents, their models, and web search access.</SheetDescription>
           </SheetHeader>
 
@@ -218,9 +291,37 @@ export default function NewDebatePage() {
                     <Label>Give this agent web search</Label>
                   </div>
 
+                  <details open={!!agent.stance || !!composedStances[i]}>
+                    <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+                      + Position they argue (optional)
+                    </summary>
+                    <div className="mt-2 space-y-1">
+                      <Textarea
+                        value={agent.stance || ""}
+                        onChange={(e) => {
+                          // Hand-editing detaches the field from the template
+                          // composition; clearing it re-attaches.
+                          stanceEditedRef.current[i] = e.target.value !== "";
+                          updateAgent(i, { stance: e.target.value });
+                        }}
+                        maxLength={300}
+                        rows={2}
+                        placeholder="e.g. Argue that remote work improves productivity — defend it honestly"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {composedStances[i] && !stanceEditedRef.current[i]
+                          ? "Follows your topic automatically — edit to take over, clear to re-attach."
+                          : "The agent argues this position honestly — it concedes points it can't defend rather than making things up."}
+                      </p>
+                      <p className="text-right text-xs text-muted-foreground">
+                        {(agent.stance || "").length}/300
+                      </p>
+                    </div>
+                  </details>
+
                   <details>
                     <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
-                      + Persona (optional)
+                      + Voice &amp; style (optional)
                     </summary>
                     <div className="mt-2 space-y-1">
                       <Textarea
@@ -228,8 +329,11 @@ export default function NewDebatePage() {
                         onChange={(e) => updateAgent(i, { persona: e.target.value })}
                         maxLength={500}
                         rows={2}
-                        placeholder="e.g. A cautious economist who prioritizes empirical evidence over theory"
+                        placeholder={personaPlaceholder}
                       />
+                      <p className="text-xs text-muted-foreground">
+                        Shapes tone and character — not their position.
+                      </p>
                       <p className="text-right text-xs text-muted-foreground">
                         {(agent.persona || "").length}/500
                       </p>
@@ -248,7 +352,7 @@ export default function NewDebatePage() {
             </Button>
 
             <div className="pt-2">
-              <p className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <p className="mb-2 flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
                 <Scale className="h-3.5 w-3.5" /> Judge
               </p>
               <Card className="border-dashed">
@@ -261,9 +365,9 @@ export default function NewDebatePage() {
                     <Label>Enable judge</Label>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Reviews the debate after each round and can pressure-test a consensus or pull
-                    the agents back on topic. Its remarks stay out of the debate unless you ask it
-                    to step in.
+                    Reviews the discussion after each round and can pressure-test a consensus or
+                    pull the agents back on topic. Its remarks stay out of the discussion unless
+                    you ask it to step in.
                   </p>
                   {judge.enabled && (
                     <div className="space-y-1.5">

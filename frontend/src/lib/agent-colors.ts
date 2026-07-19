@@ -1,19 +1,21 @@
+// The xAI-derived accent palette (DESIGN.md) is reserved for illustrative
+// moments — agent identity avatars qualify. Everything else stays monochrome.
 const PALETTE = [
-  "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300",
-  "bg-teal-100 text-teal-800 dark:bg-teal-900/50 dark:text-teal-300",
-  "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
-  "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300",
-  "bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-300",
-  "bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-300",
+  "bg-[#ff7a17]/15 text-[#ffc285]",
+  "bg-[#7c3aed]/20 text-[#c4b5fd]",
+  "bg-[#a0c3ec]/15 text-[#a0c3ec]",
+  "bg-[#ffc285]/15 text-[#ffc285]",
+  "bg-[#c4b5fd]/15 text-[#c4b5fd]",
+  "bg-[#0d1726] text-[#a0c3ec]",
 ];
 
 const AVATAR_PALETTE = [
-  "bg-indigo-500 text-white",
-  "bg-teal-500 text-white",
-  "bg-amber-500 text-white",
-  "bg-rose-500 text-white",
-  "bg-violet-500 text-white",
-  "bg-sky-500 text-white",
+  "bg-[#ff7a17] text-[#0a0a0a]",
+  "bg-[#7c3aed] text-white",
+  "bg-[#a0c3ec] text-[#0a0a0a]",
+  "bg-[#ffc285] text-[#0a0a0a]",
+  "bg-[#c4b5fd] text-[#0a0a0a]",
+  "bg-[#0d1726] text-white",
 ];
 
 export function agentColorClass(index: number): string {

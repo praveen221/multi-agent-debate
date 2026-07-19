@@ -33,11 +33,14 @@ async function apiFetch(path: string, init: RequestInit = {}) {
   return res.json();
 }
 
+export type AgentMode = "discuss" | "advocate" | "advise";
 export type AgentDraft = {
   name: string;
   model: string;
   use_search: boolean;
   persona?: string;
+  mode?: AgentMode;
+  stance?: string;
 };
 export type SourceResult = { title: string; url: string; snippet: string };
 export type Source = { query: string; results: SourceResult[] };
@@ -84,7 +87,13 @@ export type SessionDetail = {
   };
   turns: Turn[];
 };
-export type PublicAgent = { name: string; model: string; use_search: boolean };
+export type PublicAgent = {
+  name: string;
+  model: string;
+  use_search: boolean;
+  mode?: AgentMode;
+  stance?: string | null;
+};
 export type PublicDebate = {
   topic: string;
   status: string;

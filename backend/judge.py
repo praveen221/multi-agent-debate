@@ -31,7 +31,12 @@ VERDICT_SYSTEM = (
     "refocus when the discussion has drifted from the topic, intervene when you have "
     "an observation the participants themselves ought to hear, conclude ONLY when the "
     "debate has stayed converged across multiple rounds and further rounds would add "
-    "little, and none otherwise."
+    "little, and none otherwise.\n"
+    "Participant roles, when listed above the transcript, change how you read the room: "
+    "sustained disagreement between ASSIGNED ADVOCATES is healthy, not a failure — judge "
+    "whether each side is well-argued and evidence-grounded, and for advocate debates "
+    'treat "converging" as the honest weight of evidence pointing one way and conclude '
+    "when both cases are fully argued and little new is arriving."
 )
 
 PRESSURE_TEST_SYSTEM = (
@@ -67,10 +72,30 @@ REPORT_SYSTEM = (
     "sources that actually appear in the transcript below; if a claim was never "
     "grounded in a source, use an empty sources array\n"
     '- "cautions": array of short strings — what a skeptical reader should still '
-    "verify independently"
+    "verify independently\n"
+    "If participant roles are listed above the transcript and participants were "
+    "assigned advocates, adjudicate between the cases — say which side the evidence "
+    "favors and how strongly — rather than describing a consensus."
 )
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
+
+
+def _render_participants(agents: list[dict] | None) -> str:
+    """A roles header for judge calls, so the judge reads an adversarial or
+    advisory room correctly. Empty when everyone is a plain participant —
+    no point spending tokens restating the default."""
+    if not agents or all(not a.get("stance") and a.get("mode") != "advise" for a in agents):
+        return ""
+    lines = []
+    for a in agents:
+        if a.get("stance"):
+            lines.append(f"- {a['name']}: ASSIGNED ADVOCATE — argues: {a['stance']}")
+        elif a.get("mode") == "advise":
+            lines.append(f"- {a['name']}: independent advisor asked to critique the user's idea candidly")
+        else:
+            lines.append(f"- {a['name']}: open participant, views evolve freely")
+    return "Participants:\n" + "\n".join(lines) + "\n\n"
 
 
 def _render_transcript(transcript: list[dict]) -> str:
@@ -131,10 +156,13 @@ def _parse_verdict(raw: str) -> dict:
     }
 
 
-def run_verdict(model: str, topic: str, transcript: list[dict]) -> tuple[str, dict, float]:
+def run_verdict(
+    model: str, topic: str, transcript: list[dict], agents: list[dict] | None = None
+) -> tuple[str, dict, float]:
     """Returns (display_text, verdict_jsonb, cost)."""
     user_content = (
         f"The debate topic is: {topic}\n\n"
+        f"{_render_participants(agents)}"
         f"Transcript so far:\n\n{_render_transcript_with_sources(transcript, snippet_chars=150)}"
     )
     raw, cost = _call(model, VERDICT_SYSTEM, user_content)
@@ -164,10 +192,16 @@ def run_verdict(model: str, topic: str, transcript: list[dict]) -> tuple[str, di
     return verdict["summary"], verdict, cost
 
 
-def run_interjection(model: str, topic: str, transcript: list[dict], action: str) -> tuple[str, float]:
+def run_interjection(
+    model: str, topic: str, transcript: list[dict], action: str, agents: list[dict] | None = None
+) -> tuple[str, float]:
     """action: 'pressure_test' | 'refocus'. Returns (text, cost)."""
     system = PRESSURE_TEST_SYSTEM if action == "pressure_test" else REFOCUS_SYSTEM
-    user_content = f"The debate topic is: {topic}\n\nTranscript so far:\n\n{_render_transcript(transcript)}"
+    user_content = (
+        f"The debate topic is: {topic}\n\n"
+        f"{_render_participants(agents)}"
+        f"Transcript so far:\n\n{_render_transcript(transcript)}"
+    )
     text, cost = _call(model, system, user_content)
     return text.strip(), cost
 
@@ -237,10 +271,13 @@ def _parse_report(raw: str) -> dict:
     }
 
 
-def run_report(model: str, topic: str, transcript: list[dict]) -> tuple[str, dict, float]:
+def run_report(
+    model: str, topic: str, transcript: list[dict], agents: list[dict] | None = None
+) -> tuple[str, dict, float]:
     """Returns (display_text, report_jsonb, cost)."""
     user_content = (
         f"The debate topic was: {topic}\n\n"
+        f"{_render_participants(agents)}"
         f"Full transcript:\n\n{_render_transcript_with_sources(transcript)}"
     )
     raw, cost = _call(model, REPORT_SYSTEM, user_content)

@@ -1,11 +1,10 @@
-const BRAND_FROM = "#6366f1";
-const BRAND_TO = "#14b8a6";
-
+// Two overlapping speech shapes, monochrome per the xAI-derived system —
+// white ink over near-black, the back shape in canvas-mid.
 function LogoMark({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <rect x="3" y="6" width="20" height="14" rx="5" fill={BRAND_FROM} />
-      <rect x="9" y="12" width="20" height="14" rx="5" fill={BRAND_TO} />
+      <rect x="3" y="6" width="20" height="14" rx="5" fill="#363a3f" />
+      <rect x="9" y="12" width="20" height="14" rx="5" fill="#ffffff" />
     </svg>
   );
 }

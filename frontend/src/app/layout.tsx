@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, EB_Garamond } from "next/font/google";
+import { Inter, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
@@ -8,15 +8,15 @@ const inter = Inter({
   subsets: ["latin"],
 });
 
-const ebGaramond = EB_Garamond({
-  variable: "--font-eb-garamond",
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
   subsets: ["latin"],
-  weight: ["400", "500"],
+  weight: ["400"],
 });
 
 export const metadata: Metadata = {
   title: "Mad World",
-  description: "Watch AI models debate a topic, turn by turn.",
+  description: "AI models discuss your question — and argue instead of agreeing with you.",
 };
 
 export default function RootLayout({
@@ -28,10 +28,11 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${inter.variable} ${ebGaramond.variable} h-full antialiased`}
+      className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+        {/* Dark-canvas only, per the xAI-derived design system. */}
+        <ThemeProvider attribute="class" forcedTheme="dark">
           {children}
         </ThemeProvider>
       </body>

@@ -29,13 +29,13 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { shareId } = await params;
   const debate = await fetchDebate(shareId);
-  if (!debate) return { title: "Debate not found · Mad World" };
+  if (!debate) return { title: "Discussion not found · Mad World" };
   return {
     title: `${debate.topic} · Mad World`,
-    description: `${matchupFor(debate)} debated this on Mad World.`,
+    description: `${matchupFor(debate)} discussed this on Mad World.`,
     openGraph: {
       title: debate.topic,
-      description: `${matchupFor(debate)} — an AI debate with real sources, on Mad World.`,
+      description: `${matchupFor(debate)} — AI models arguing it out with real sources, on Mad World.`,
       siteName: "Mad World",
       type: "article",
     },
@@ -58,13 +58,13 @@ export default async function PublicDebatePage({
           <Link href="/">
             <MadWorldLogo />
           </Link>
-          <p className="text-xs text-muted-foreground">
-            {debate.status === "active" ? "Live debate" : "Concluded debate"}
+          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+            {debate.status === "active" ? "Live" : "Concluded"}
           </p>
         </header>
 
         <div className="mt-10">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Topic</p>
+          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Topic</p>
           <h1 className="mt-1 text-2xl leading-snug">{debate.topic}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{matchupFor(debate)}</p>
         </div>
@@ -75,13 +75,14 @@ export default async function PublicDebatePage({
 
         <footer className="mt-14 border-t pt-8 pb-10 text-center">
           <p className="text-sm text-muted-foreground">
-            Debated on Mad World — AI models arguing it out with real sources, refereed by a judge.
+            Discussed on Mad World — AI models arguing it out with real sources, refereed by a
+            judge.
           </p>
           <Link
             href="/"
             className="mt-4 inline-flex items-center rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Start your own debate
+            Start your own discussion
           </Link>
         </footer>
       </div>

@@ -6,7 +6,6 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { MadWorldLogo } from "@/components/mad-world-logo";
 
 function GoogleIcon() {
@@ -65,24 +64,15 @@ export default function Home() {
 
   return (
     <main className="relative flex min-h-dvh flex-col items-center justify-center gap-6 overflow-hidden px-6 text-center">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute left-1/2 top-1/2 h-[32rem] w-[32rem] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-40 blur-3xl dark:opacity-20"
-        style={{
-          background:
-            "radial-gradient(circle at 35% 35%, #a7e5d3, transparent 60%), radial-gradient(circle at 65% 65%, #c8b8e0, transparent 60%)",
-        }}
-      />
-
-      <div className="absolute right-6 top-6">
-        <ThemeToggle />
-      </div>
-
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: "easeOut" }}
+        className="flex flex-col items-center gap-5"
       >
+        <p className="font-mono text-xs uppercase tracking-[0.12em] text-muted-foreground">
+          A multi-agent discussion lab
+        </p>
         <MadWorldLogo size="lg" />
       </motion.div>
 
@@ -92,8 +82,8 @@ export default function Home() {
         transition={{ duration: 0.5, delay: 0.15, ease: "easeOut" }}
         className="max-w-md text-muted-foreground"
       >
-        Pick a topic, pick your models, and watch AI agents debate it turn by
-        turn — with real independent web search.
+        Bring a question, pick your models, and get AI agents that argue it
+        out instead of agreeing with you — with real independent web search.
       </motion.p>
 
       <motion.div

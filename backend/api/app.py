@@ -333,7 +333,9 @@ def judge_action(
             }
         check_within_budget(user_id)
         model = judge_config.get("model") or DEFAULT_JUDGE_MODEL
-        text, verdict, cost = judge_module.run_report(model, session["topic"], transcript)
+        text, verdict, cost = judge_module.run_report(
+            model, session["topic"], transcript, agents=session["agents"]
+        )
         db.table("mad_turns").insert(
             {
                 "session_id": session_id,
@@ -379,11 +381,12 @@ def judge_action(
         check_within_budget(user_id)
         if body.action == "verdict":
             text, verdict, cost = judge_module.run_verdict(
-                judge_config["model"], session["topic"], transcript
+                judge_config["model"], session["topic"], transcript, agents=session["agents"]
             )
         else:  # pressure_test | refocus
             text, cost = judge_module.run_interjection(
-                judge_config["model"], session["topic"], transcript, body.action
+                judge_config["model"], session["topic"], transcript, body.action,
+                agents=session["agents"],
             )
             verdict = {"kind": "intervention", "action": body.action}
 
@@ -452,7 +455,16 @@ def get_public_debate(share_id: str):
         "status": session["status"],
         "created_at": session["created_at"],
         "agents": [
-            {"name": a["name"], "model": a["model"], "use_search": a.get("use_search", False)}
+            {
+                "name": a["name"],
+                "model": a["model"],
+                "use_search": a.get("use_search", False),
+                # mode/stance are part of the debate's honest framing — a
+                # reader must be able to tell advocacy from belief. Personas
+                # stay private.
+                "mode": a.get("mode", "discuss"),
+                "stance": a.get("stance"),
+            }
             for a in session["agents"]
         ],
         "turns": turns,

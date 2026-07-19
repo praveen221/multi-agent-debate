@@ -6,7 +6,7 @@ function ReportList({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (
     <div>
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
+      <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">{title}</p>
       <ul className="mt-1.5 list-disc space-y-1 pl-4 text-sm leading-relaxed">
         {items.map((item, i) => (
           <li key={i}>{item}</li>
@@ -30,14 +30,14 @@ export function ReportCard({ turn }: { turn: Turn }) {
   return (
     <div className="mx-auto w-full max-w-2xl">
       <div className="rounded-xl border bg-muted/40 px-5 py-4">
-        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <p className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
           <Scale className="h-3.5 w-3.5" /> Closing report
         </p>
 
         {structured ? (
           <div className="mt-3 space-y-4">
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
                 Where it landed
               </p>
               <p className="mt-1.5 text-sm leading-relaxed">{turn.text}</p>
@@ -46,7 +46,7 @@ export function ReportCard({ turn }: { turn: Turn }) {
             <ReportList title="Still contested" items={report?.contentions ?? []} />
             {(report?.evidence?.length ?? 0) > 0 && (
               <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
                   Evidence that mattered
                 </p>
                 <div className="mt-1.5 space-y-2.5">

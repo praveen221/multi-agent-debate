@@ -8,6 +8,10 @@ class AgentConfig(BaseModel):
     model: str
     use_search: bool = False
     persona: str | None = Field(default=None, max_length=500)
+    # Interaction mode, usually set by a template. A non-empty stance makes
+    # the agent an advocate regardless of mode.
+    mode: Literal["discuss", "advocate", "advise"] = "discuss"
+    stance: str | None = Field(default=None, max_length=300)
 
 
 class JudgeConfig(BaseModel):

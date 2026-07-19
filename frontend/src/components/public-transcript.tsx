@@ -35,8 +35,8 @@ export function PublicTranscript({ agents, turns }: { agents: PublicAgent[]; tur
       .join("");
   }
 
-  function modelFor(speaker: string): string | undefined {
-    return agents.find((a) => a.name === speaker)?.model;
+  function agentFor(speaker: string): PublicAgent | undefined {
+    return agents.find((a) => a.name === speaker);
   }
 
   return (
@@ -86,12 +86,24 @@ export function PublicTranscript({ agents, turns }: { agents: PublicAgent[]; tur
             <div className="min-w-0 flex-1">
               <p className="mb-1 text-sm">
                 <span className="font-medium">{turn.speaker}</span>
-                {modelFor(turn.speaker) && (
+                {agentFor(turn.speaker) && (
                   <span className="text-muted-foreground">
                     {" "}
-                    · {shortModelName(modelFor(turn.speaker)!)}
+                    · {shortModelName(agentFor(turn.speaker)!.model)}
                   </span>
                 )}
+                {agentFor(turn.speaker)?.stance ? (
+                  <span
+                    className="ml-1.5 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground"
+                    title={agentFor(turn.speaker)!.stance!}
+                  >
+                    arguing a side
+                  </span>
+                ) : agentFor(turn.speaker)?.mode === "advise" ? (
+                  <span className="ml-1.5 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground">
+                    advisor
+                  </span>
+                ) : null}
               </p>
               <TurnMarkdown text={turn.text} />
               {turn.sources && turn.sources.length > 0 && (

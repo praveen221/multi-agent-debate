@@ -9,7 +9,6 @@ import { listSessions, getCredits, type SessionSummary, type Credits } from "@/l
 import { formatRelativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { MadWorldLogo } from "@/components/mad-world-logo";
 
 export default function DebateLayout({ children }: { children: React.ReactNode }) {
@@ -69,12 +68,12 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
       </Link>
 
       <Button className="mb-4 w-full" onClick={() => router.push("/debate")}>
-        + New debate
+        + New discussion
       </Button>
 
       <div className="flex-1 space-y-1 overflow-y-auto">
         {sessions.length === 0 && (
-          <p className="px-2 text-xs text-muted-foreground">No past debates yet.</p>
+          <p className="px-2 text-xs text-muted-foreground">No past discussions yet.</p>
         )}
         {sessions.map((s) => {
           const href = `/debate/${s.session_id}`;
@@ -104,16 +103,15 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
       </div>
 
       {credits && (
-        <div className="mt-4 border-t pt-4 text-xs text-muted-foreground">
+        <div className="mt-4 border-t pt-4 font-mono text-xs text-muted-foreground">
           ${credits.spent_usd.toFixed(4)} / ${credits.limit_usd.toFixed(2)} used
         </div>
       )}
 
-      <div className="mt-2 flex items-center justify-between border-t pt-4">
+      <div className="mt-2 border-t pt-4">
         <Button variant="ghost" size="sm" onClick={handleSignOut}>
           Sign out
         </Button>
-        <ThemeToggle />
       </div>
     </>
   );

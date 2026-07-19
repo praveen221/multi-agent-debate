@@ -173,6 +173,11 @@ export default function DebateSessionPage() {
     return [
       speaker,
       config.model,
+      ...(config.stance
+        ? [`Assigned stance: ${config.stance}`]
+        : config.mode === "advise"
+          ? ["Independent advisor — asked to critique candidly"]
+          : []),
       `Web search: ${config.use_search ? "on" : "off"}`,
       `Cost so far: $${costSoFarFor(speaker).toFixed(4)}`,
     ].join("\n");
@@ -437,7 +442,7 @@ export default function DebateSessionPage() {
   if (loadingSession) {
     return (
       <main className="flex h-full items-center justify-center text-muted-foreground">
-        Loading debate…
+        Loading discussion…
       </main>
     );
   }
@@ -447,7 +452,7 @@ export default function DebateSessionPage() {
       <div className="shrink-0 border-b px-4 py-4 sm:px-6 sm:py-6">
         <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
               Topic
             </p>
             {topicOverflowing ? (
@@ -481,7 +486,11 @@ export default function DebateSessionPage() {
                   render={
                     <button
                       onClick={handleShare}
-                      title={shareId ? "This debate has a public link" : "Share this debate publicly"}
+                      title={
+                        shareId
+                          ? "This discussion has a public link"
+                          : "Share this discussion publicly"
+                      }
                       className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors ${
                         shareId ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                       }`}
@@ -496,7 +505,7 @@ export default function DebateSessionPage() {
                     <div className="space-y-2">
                       <p className="text-sm font-medium">Public link</p>
                       <p className="text-xs text-muted-foreground">
-                        Anyone with this link can read this debate.
+                        Anyone with this link can read this discussion.
                         {shareCopied ? " Copied to clipboard." : ""}
                       </p>
                       <Input readOnly value={shareUrl} onFocus={(e) => e.target.select()} />
@@ -533,6 +542,8 @@ export default function DebateSessionPage() {
                     ? "The judge reviews each round — click to turn it off"
                     : "Bring in a judge to review each round"
                 }
+                aria-label={judge?.enabled ? "Turn judge off" : "Turn judge on"
+                }
                 className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
                   judge?.enabled
                     ? "text-foreground"
@@ -544,8 +555,8 @@ export default function DebateSessionPage() {
               </button>
               )}
             </div>
-            <p className="whitespace-nowrap text-xs text-muted-foreground">
-              this debate: ${debateCost.toFixed(4)}
+            <p className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+              this discussion: ${debateCost.toFixed(4)}
             </p>
           </div>
         </div>
@@ -622,15 +633,15 @@ export default function DebateSessionPage() {
                         />
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>Conclude this debate?</AlertDialogTitle>
+                            <AlertDialogTitle>Conclude this discussion?</AlertDialogTitle>
                             <AlertDialogDescription>
-                              The judge thinks this debate has settled. No more rounds after
+                              The judge thinks this discussion has settled. No more rounds after
                               this — the judge will write the closing report, and the transcript
                               stays saved in your sidebar.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel>Keep debating</AlertDialogCancel>
+                            <AlertDialogCancel>Keep discussing</AlertDialogCancel>
                             <AlertDialogAction onClick={handleEnd}>Conclude</AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
@@ -677,6 +688,18 @@ export default function DebateSessionPage() {
                       · {shortModelName(agentConfigFor(turn.speaker)!.model)}
                     </span>
                   )}
+                  {agentConfigFor(turn.speaker)?.stance ? (
+                    <span
+                      className="ml-1.5 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground"
+                      title={agentConfigFor(turn.speaker)!.stance}
+                    >
+                      arguing a side
+                    </span>
+                  ) : agentConfigFor(turn.speaker)?.mode === "advise" ? (
+                    <span className="ml-1.5 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground">
+                      advisor
+                    </span>
+                  ) : null}
                 </p>
                 <TurnMarkdown text={turn.text} />
                 {turn.sources && turn.sources.length > 0 && (
@@ -766,7 +789,7 @@ export default function DebateSessionPage() {
           {budgetExceeded ? (
             <Card className="mb-4 border-destructive/50">
               <CardContent className="pt-6 text-sm">
-                <p className="font-medium text-destructive">Debate credit used up</p>
+                <p className="font-medium text-destructive">Credits used up</p>
                 <p className="mt-1 text-muted-foreground">
                   {error} Email{" "}
                   <a className="underline" href="mailto:mpj1391996@gmail.com">
@@ -781,7 +804,7 @@ export default function DebateSessionPage() {
           )}
 
           {status === "active" && midAutoplay && (
-            <p className="mb-2 text-xs text-muted-foreground">
+            <p className="mb-2 font-mono text-xs text-muted-foreground">
               Round {roundNumber} · Turn {turnInRound} of {turnsPerRound}
             </p>
           )}
@@ -802,7 +825,7 @@ export default function DebateSessionPage() {
                       setSteerInput("");
                     }
                   }}
-                  placeholder="Say something to steer the debate…"
+                  placeholder="Say something to steer the discussion…"
                 />
                 <Button size="sm" onClick={submitSteer} disabled={!steerInput.trim()}>
                   Send
@@ -855,10 +878,10 @@ export default function DebateSessionPage() {
                   />
                   <AlertDialogContent>
                     <AlertDialogHeader>
-                      <AlertDialogTitle>Conclude this debate?</AlertDialogTitle>
+                      <AlertDialogTitle>Conclude this discussion?</AlertDialogTitle>
                       <AlertDialogDescription>
                         No more rounds after this. The judge will write a closing report of where
-                        the debate landed, and the transcript stays saved in your sidebar.
+                        the discussion landed, and the transcript stays saved in your sidebar.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -870,7 +893,7 @@ export default function DebateSessionPage() {
               </>
             ) : (
               <div className="flex items-center gap-3">
-                <p className="text-sm text-muted-foreground">This debate has concluded.</p>
+                <p className="text-sm text-muted-foreground">This discussion has concluded.</p>
                 {!hasReport && judging === null && (
                   <Button variant="outline" onClick={generateReport}>
                     Generate closing report

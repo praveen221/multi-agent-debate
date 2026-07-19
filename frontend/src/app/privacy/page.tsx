@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-export const metadata = { title: "Privacy — Multi-Agent Debate" };
+export const metadata = { title: "Privacy — Mad World" };
 
 export default function PrivacyPage() {
   return (
@@ -21,13 +21,15 @@ export default function PrivacyPage() {
           don&apos;t see or store your Google password.
         </p>
         <p>
-          <strong className="text-foreground">Debates.</strong> The topics, agent configurations,
-          and transcripts of debates you run are stored so you can revisit them later from the
-          sidebar. They&apos;re tied to your account and not visible to other users.
+          <strong className="text-foreground">Discussions.</strong> The topics, agent
+          configurations, and transcripts of discussions you run are stored so you can revisit
+          them later from the sidebar. They&apos;re tied to your account and not visible to
+          anyone else — unless you explicitly create a public share link, which anyone holding
+          the link can read until you unshare it.
         </p>
         <p>
-          <strong className="text-foreground">Usage.</strong> We track how much each debate costs
-          in API spend, attributed to your account, to enforce a fair-use credit limit.
+          <strong className="text-foreground">Usage.</strong> We track how much each discussion
+          costs in API spend, attributed to your account, to enforce a fair-use credit limit.
         </p>
         <p>
           <strong className="text-foreground">Nobody else gets this.</strong> Nothing here is
