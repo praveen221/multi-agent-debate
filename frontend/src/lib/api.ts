@@ -82,6 +82,8 @@ export type SessionDetail = {
   session: {
     id: string;
     topic: string;
+    subject?: string | null;
+    template_label?: string | null;
     status: string;
     agents: AgentDraft[];
     judge?: JudgeConfig | null;
@@ -98,6 +100,8 @@ export type PublicAgent = {
 };
 export type PublicDebate = {
   topic: string;
+  subject: string;
+  template_label: string | null;
   status: string;
   created_at: string;
   agents: PublicAgent[];
@@ -105,6 +109,7 @@ export type PublicDebate = {
 };
 export type StreamEvent =
   | { type: "search"; query: string }
+  | { type: "search_result"; query: string; result_count: number; titles: string[] }
   | {
       type: "turn";
       turn_index: number;
@@ -124,10 +129,22 @@ export function getCredits(): Promise<Credits> {
   return apiFetch("/api/credits");
 }
 
-export function createSession(topic: string, agents: AgentDraft[], judge?: JudgeConfig) {
+export function createSession(
+  topic: string,
+  agents: AgentDraft[],
+  judge?: JudgeConfig,
+  subject?: string,
+  templateLabel?: string | null,
+) {
   return apiFetch("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ topic, agents, judge }),
+    body: JSON.stringify({
+      topic,
+      agents,
+      judge,
+      subject,
+      template_label: templateLabel,
+    }),
   }) as Promise<{ session_id: string; topic: string; agents: AgentDraft[] }>;
 }
 

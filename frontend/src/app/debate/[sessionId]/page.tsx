@@ -79,9 +79,12 @@ export default function DebateSessionPage() {
 
   const [loadingSession, setLoadingSession] = useState(true);
   const [topic, setTopic] = useState("");
+  const [subject, setSubject] = useState("");
+  const [templateLabel, setTemplateLabel] = useState<string | null>(null);
   const [status, setStatus] = useState("active");
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [searchTrace, setSearchTrace] = useState<string[]>([]);
+  type SearchEntry = { query: string; done: boolean; titles: string[]; resultCount: number };
+  const [searchTrace, setSearchTrace] = useState<SearchEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
@@ -113,6 +116,9 @@ export default function DebateSessionPage() {
     getSession(sessionId)
       .then(({ session, turns }) => {
         setTopic(session.topic);
+        // Old sessions predate this column — fall back to the full topic.
+        setSubject(session.subject || session.topic);
+        setTemplateLabel(session.template_label || null);
         setStatus(session.status);
         setTurns(turns);
         setAgents(session.agents);
@@ -147,7 +153,7 @@ export default function DebateSessionPage() {
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [topic]);
+  }, [subject]);
 
   function avatarForSpeaker(speaker: string): string {
     const index = agents.findIndex((a) => a.name === speaker);
@@ -195,7 +201,25 @@ export default function DebateSessionPage() {
     try {
       await nextTurnStream(sessionId, turns.length, (event) => {
         if (event.type === "search") {
-          setSearchTrace((prev) => [...prev, event.query]);
+          setSearchTrace((prev) => [
+            ...prev,
+            { query: event.query, done: false, titles: [], resultCount: 0 },
+          ]);
+        } else if (event.type === "search_result") {
+          setSearchTrace((prev) => {
+            // First still-pending entry with this query — searches can
+            // legitimately repeat within a turn, so match, don't index.
+            const i = prev.findIndex((s) => s.query === event.query && !s.done);
+            if (i === -1) return prev;
+            const next = [...prev];
+            next[i] = {
+              ...next[i],
+              done: true,
+              titles: event.titles,
+              resultCount: event.result_count,
+            };
+            return next;
+          });
         } else if (event.type === "turn") {
           setTurns((prev) => [
             ...prev,
@@ -480,9 +504,18 @@ export default function DebateSessionPage() {
       <div className="shrink-0 border-b px-4 py-4 sm:px-6 sm:py-6">
         <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0">
-            <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-              Topic
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                Topic
+              </p>
+              {templateLabel && (
+                <span className="rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {templateLabel}
+                </span>
+              )}
+            </div>
+            {/* subject is what the user typed; topic is the full composed
+                instruction sent to agents — shown on expand for transparency. */}
             {topicOverflowing ? (
               <Popover>
                 <PopoverTrigger
@@ -490,20 +523,25 @@ export default function DebateSessionPage() {
                   render={
                     <h1
                       ref={topicRef}
-                      title={topic}
+                      title={subject}
                       className="mt-1 line-clamp-2 max-w-2xl cursor-pointer text-xl leading-snug hover:opacity-80"
                     >
-                      {topic}
+                      {subject}
                     </h1>
                   }
                 />
                 <PopoverContent className="w-96 max-w-[90vw]" align="start">
+                  {templateLabel && subject !== topic && (
+                    <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Sent to agents as
+                    </p>
+                  )}
                   <p className="text-sm leading-relaxed text-popover-foreground">{topic}</p>
                 </PopoverContent>
               </Popover>
             ) : (
               <h1 ref={topicRef} className="mt-1 line-clamp-2 max-w-2xl text-xl leading-snug">
-                {topic}
+                {subject}
               </h1>
             )}
           </div>
@@ -786,10 +824,21 @@ export default function DebateSessionPage() {
                   Thinking…
                 </p>
               ) : (
-                searchTrace.map((q, i) => (
+                searchTrace.map((s, i) => (
                   <p key={i} className="flex items-center gap-2">
-                    <span className="h-2 w-2 animate-pulse rounded-full bg-current" />
-                    searching: &ldquo;{q}&rdquo;
+                    <span
+                      className={`h-2 w-2 rounded-full bg-current ${s.done ? "" : "animate-pulse"}`}
+                    />
+                    {!s.done ? (
+                      <>searching: &ldquo;{s.query}&rdquo;</>
+                    ) : s.titles.length > 0 ? (
+                      <>
+                        found: &ldquo;{s.titles[0]}&rdquo;
+                        {s.resultCount > 1 ? ` +${s.resultCount - 1} more` : ""}
+                      </>
+                    ) : (
+                      <>no results for &ldquo;{s.query}&rdquo;</>
+                    )}
                   </p>
                 ))
               )}

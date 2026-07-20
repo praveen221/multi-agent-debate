@@ -144,7 +144,13 @@ export default function NewDebatePage() {
       const finalAgents = agents.map((a, i) =>
         !a.stance && stances[i] ? { ...a, stance: stances[i] } : a,
       );
-      const res = await createSession(finalTopic, finalAgents, judge);
+      const res = await createSession(
+        finalTopic,
+        finalAgents,
+        judge,
+        input,
+        activeTemplate.id === "open" ? null : activeTemplate.label,
+      );
       router.push(`/debate/${res.session_id}`);
     } catch (e) {
       if (e instanceof ApiError && e.status === 402) {

@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
 
@@ -105,6 +105,23 @@ def _run_tool_calls(calls: list[tuple[str, dict]], tool_executor) -> list:
         return [f.result() for f in futures]
 
 
+def _run_tool_calls_progressive(calls: list[tuple[str, dict]], tool_executor):
+    """Same batch as _run_tool_calls, but yields (index, result) as each one
+    finishes instead of waiting for the whole batch — lets a streaming
+    caller report real progress instead of a wall of silence until the
+    slowest search lands."""
+    if len(calls) <= 1:
+        for i, (name, args) in enumerate(calls):
+            yield i, tool_executor(name, args)
+        return
+    with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOL_CALLS)) as pool:
+        future_to_index = {
+            pool.submit(tool_executor, name, args): i for i, (name, args) in enumerate(calls)
+        }
+        for future in as_completed(future_to_index):
+            yield future_to_index[future], future.result()
+
+
 def get_client(provider: str) -> OpenAI:
     config = PROVIDERS[provider]
     api_key = os.environ.get(config["api_key_env"])
@@ -187,11 +204,24 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
         full_messages.append(message.model_dump(exclude_unset=True))
 
         # Announce every call in the batch up front (so the UI shows all
-        # pending searches at once, not a trickle), then run them together.
+        # pending searches at once, not a trickle), then run them together
+        # and report each one as it lands — real progress, not a spinner.
         parsed = [(tc.function.name, json.loads(tc.function.arguments)) for tc in message.tool_calls]
         for name, args in parsed:
             yield {"type": "tool_call", "name": name, "args": args}
-        results = _run_tool_calls(parsed, tool_executor)
+
+        results: list = [None] * len(parsed)
+        for index, result in _run_tool_calls_progressive(parsed, tool_executor):
+            results[index] = result
+            name, args = parsed[index]
+            if name == "web_search":
+                yield {
+                    "type": "tool_result",
+                    "name": name,
+                    "query": args.get("query", ""),
+                    "result_count": len(result),
+                    "titles": [r.get("title", "") for r in result[:2] if r.get("title")],
+                }
 
         for tool_call, (name, args), result in zip(message.tool_calls, parsed, results):
             if name == "web_search":

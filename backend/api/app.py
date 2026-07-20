@@ -100,6 +100,8 @@ def create_session(
             {
                 "user_id": user_id,
                 "topic": body.topic,
+                "subject": body.subject or body.topic,
+                "template_label": body.template_label,
                 "agents": [a.model_dump() for a in body.agents],
                 "judge": body.judge.model_dump() if body.judge else None,
                 "status": "active",
@@ -212,6 +214,18 @@ def next_turn(
                 if event["type"] == "tool_call" and event["name"] == "web_search":
                     query = event["args"].get("query", "")
                     yield json.dumps({"type": "search", "query": query}) + "\n"
+                elif event["type"] == "tool_result" and event["name"] == "web_search":
+                    yield (
+                        json.dumps(
+                            {
+                                "type": "search_result",
+                                "query": event["query"],
+                                "result_count": event["result_count"],
+                                "titles": event["titles"],
+                            }
+                        )
+                        + "\n"
+                    )
                 elif event["type"] == "text":
                     final_text = event["text"]
                     cost = event["cost"]
@@ -508,6 +522,8 @@ def get_public_debate(share_id: str):
     )
     return {
         "topic": session["topic"],
+        "subject": session.get("subject") or session["topic"],
+        "template_label": session.get("template_label"),
         "status": session["status"],
         "created_at": session["created_at"],
         "agents": [

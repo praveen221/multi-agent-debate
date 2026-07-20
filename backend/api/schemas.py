@@ -23,6 +23,12 @@ class CreateSessionRequest(BaseModel):
     topic: str
     agents: list[AgentConfig]
     judge: JudgeConfig | None = None
+    # What the user actually typed, before a template composed it into the
+    # full instruction above — kept separate so the header can show just
+    # that instead of the composed prompt. Optional: old clients and the
+    # open-discussion template (no composition) can omit it.
+    subject: str | None = Field(default=None, max_length=2000)
+    template_label: str | None = Field(default=None, max_length=60)
 
 
 class UpdateSessionRequest(BaseModel):

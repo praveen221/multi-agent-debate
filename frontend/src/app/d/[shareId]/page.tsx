@@ -31,10 +31,10 @@ export async function generateMetadata({
   const debate = await fetchDebate(shareId);
   if (!debate) return { title: "Discussion not found · Mad World" };
   return {
-    title: `${debate.topic} · Mad World`,
+    title: `${debate.subject} · Mad World`,
     description: `${matchupFor(debate)} discussed this on Mad World.`,
     openGraph: {
-      title: debate.topic,
+      title: debate.subject,
       description: `${matchupFor(debate)} — AI models arguing it out with real sources, on Mad World.`,
       siteName: "Mad World",
       type: "article",
@@ -64,8 +64,17 @@ export default async function PublicDebatePage({
         </header>
 
         <div className="mt-10">
-          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Topic</p>
-          <h1 className="mt-1 text-2xl leading-snug">{debate.topic}</h1>
+          <div className="flex items-center gap-2">
+            <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+              Topic
+            </p>
+            {debate.template_label && (
+              <span className="rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                {debate.template_label}
+              </span>
+            )}
+          </div>
+          <h1 className="mt-1 text-2xl leading-snug">{debate.subject}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{matchupFor(debate)}</p>
         </div>
 
