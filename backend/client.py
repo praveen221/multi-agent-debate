@@ -1,10 +1,15 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 
 MAX_TOOL_ROUNDS = 3
+# A model can request several web_search calls in one turn (we've seen up to
+# 4-5) — tool_executor is IO-bound network work, so a thread pool collapses
+# that from "sum of every search's latency" to "roughly the slowest one".
+MAX_PARALLEL_TOOL_CALLS = 8
 
 PROVIDERS = {
     "openrouter": {
@@ -89,6 +94,17 @@ def _deliver(client, model, full_messages, text):
     return (clean or stripped), cost
 
 
+def _run_tool_calls(calls: list[tuple[str, dict]], tool_executor) -> list:
+    """Runs a batch of tool calls concurrently and returns results in the
+    same order as `calls`. A single call skips the pool entirely — no
+    thread-creation overhead for the common case of one search."""
+    if len(calls) <= 1:
+        return [tool_executor(name, args) for name, args in calls]
+    with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOL_CALLS)) as pool:
+        futures = [pool.submit(tool_executor, name, args) for name, args in calls]
+        return [f.result() for f in futures]
+
+
 def get_client(provider: str) -> OpenAI:
     config = PROVIDERS[provider]
     api_key = os.environ.get(config["api_key_env"])
@@ -117,9 +133,9 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
 
         full_messages.append(message.model_dump(exclude_unset=True))
 
-        for tool_call in message.tool_calls:
-            args = json.loads(tool_call.function.arguments)
-            result = tool_executor(tool_call.function.name, args)
+        parsed = [(tc.function.name, json.loads(tc.function.arguments)) for tc in message.tool_calls]
+        results = _run_tool_calls(parsed, tool_executor)
+        for tool_call, result in zip(message.tool_calls, results):
             full_messages.append(
                 {
                     "role": "tool",
@@ -170,11 +186,15 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
 
         full_messages.append(message.model_dump(exclude_unset=True))
 
-        for tool_call in message.tool_calls:
-            args = json.loads(tool_call.function.arguments)
-            yield {"type": "tool_call", "name": tool_call.function.name, "args": args}
-            result = tool_executor(tool_call.function.name, args)
-            if tool_call.function.name == "web_search":
+        # Announce every call in the batch up front (so the UI shows all
+        # pending searches at once, not a trickle), then run them together.
+        parsed = [(tc.function.name, json.loads(tc.function.arguments)) for tc in message.tool_calls]
+        for name, args in parsed:
+            yield {"type": "tool_call", "name": name, "args": args}
+        results = _run_tool_calls(parsed, tool_executor)
+
+        for tool_call, (name, args), result in zip(message.tool_calls, parsed, results):
+            if name == "web_search":
                 sources.append({"query": args.get("query", ""), "results": result})
             full_messages.append(
                 {
