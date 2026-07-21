@@ -114,6 +114,12 @@ def _render_transcript(transcript: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+# Same worst-case protection as MAX_RESPONSE_TOKENS in client.py — a report
+# synthesizes a whole transcript plus sources, so it gets more headroom than
+# a single agent turn.
+MAX_JUDGE_TOKENS = 2000
+
+
 def _call(model: str, system: str, user_content: str) -> tuple[str, float]:
     client = get_client("openrouter")
     response = client.chat.completions.create(
@@ -122,6 +128,7 @@ def _call(model: str, system: str, user_content: str) -> tuple[str, float]:
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ],
+        max_tokens=MAX_JUDGE_TOKENS,
     )
     cost = getattr(response.usage, "cost", 0) or 0
     return response.choices[0].message.content or "", cost

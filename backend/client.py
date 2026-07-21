@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
@@ -10,6 +11,14 @@ MAX_TOOL_ROUNDS = 3
 # 4-5) — tool_executor is IO-bound network work, so a thread pool collapses
 # that from "sum of every search's latency" to "roughly the slowest one".
 MAX_PARALLEL_TOOL_CALLS = 8
+
+# Bounds the worst case in both cost and wall-clock time if a model degrades
+# into a repetition loop instead of stopping (observed: 151K chars / $0.096 /
+# 13 minutes for one turn). ~1100-1200 words — generous headroom over what
+# the brevity instruction in agent_factory.py now asks for, but nowhere near
+# unbounded. Paired with dedupe_repeated_lines below: the cap limits how much
+# a loop can cost before it's cut off, the dedupe cleans up what's left.
+MAX_RESPONSE_TOKENS = 1500
 
 PROVIDERS = {
     "openrouter": {
@@ -54,6 +63,15 @@ _LEAK_FN_TOKEN_RE = re.compile(r"functions\.\w+:\d*")
 # ("Let me check the latest numbers.") — not worth showing as a turn.
 _MIN_SURVIVING_CHARS = 200
 
+# A line repeating this many times is a degenerate loop, not a model
+# legitimately restating a short phrase for emphasis (that's rare, and
+# requiring a few repeats before we intervene means dedup never touches a
+# normal response). Only lines at least this long count — short lines
+# ("---", list-item dashes, blank separators) repeat constantly in normal
+# markdown and aren't the failure mode we're guarding against.
+_REPEAT_LOOP_THRESHOLD = 3
+_MIN_REPEAT_LINE_CHARS = 30
+
 _NO_TOOLS_NUDGE = {
     "role": "user",
     "content": (
@@ -77,21 +95,79 @@ def strip_leaked_tool_calls(text: str) -> str:
     return re.sub(r"^(?:-{3,}\s*)+", "", text)
 
 
+def _looks_like_repetition_loop(text: str) -> bool:
+    lines = [ln.strip() for ln in text.split("\n") if len(ln.strip()) >= _MIN_REPEAT_LINE_CHARS]
+    if not lines:
+        return False
+    return Counter(lines).most_common(1)[0][1] >= _REPEAT_LOOP_THRESHOLD
+
+
+def dedupe_repeated_lines(text: str) -> str:
+    """Collapses a degenerate repetition loop (the same block restated many
+    times in a row) down to the first copy of each substantial line, in
+    original order. Turns "same ~10-line argument repeated 32 times" back
+    into the single coherent answer that was said the first time. Short
+    lines (blank separators, list markers) are never deduped — only lines
+    long enough that an exact repeat can't be coincidental structure."""
+    seen: set[str] = set()
+    kept = []
+    for line in text.split("\n"):
+        key = line.strip()
+        substantial = len(key) >= _MIN_REPEAT_LINE_CHARS
+        if substantial and key in seen:
+            continue
+        if substantial:
+            seen.add(key)
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _dedupe_repeated_paragraphs(text: str) -> str:
+    """Second pass at paragraph granularity, no minimum length. Real loops
+    observed in production nest a second, shorter cycle inside the big one —
+    e.g. a short section header like "**Revised estimate:**" repeated on its
+    own between blank lines — too short for dedupe_repeated_lines' 30-char
+    floor. Only called after _looks_like_repetition_loop has already
+    confirmed this is a genuine degenerate response, so being this
+    aggressive (any exact repeat, any length, gets collapsed) is safe."""
+    normalized = re.sub(r"\n{3,}", "\n\n", text)
+    seen: set[str] = set()
+    kept = []
+    for para in normalized.split("\n\n"):
+        key = para.strip()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        kept.append(para)
+    return "\n\n".join(kept).strip()
+
+
+def _clean(text: str) -> str:
+    if _looks_like_leaked_tool_call(text):
+        text = strip_leaked_tool_calls(text)
+    if _looks_like_repetition_loop(text):
+        text = dedupe_repeated_lines(text)
+        text = _dedupe_repeated_paragraphs(text)
+    return text
+
+
 def _deliver(client, model, full_messages, text):
     """Final gate for every reply. Returns (clean_text, extra_cost)."""
-    if not _looks_like_leaked_tool_call(text or ""):
-        return text, 0.0
-    stripped = strip_leaked_tool_calls(text)
-    if len(stripped) >= _MIN_SURVIVING_CHARS:
-        return stripped, 0.0
+    text = text or ""
+    cleaned = _clean(text)
+    if cleaned == text or len(cleaned) >= _MIN_SURVIVING_CHARS:
+        return cleaned, 0.0
     retry = client.chat.completions.create(
-        model=model, messages=full_messages + [_NO_TOOLS_NUDGE]
+        model=model,
+        messages=full_messages + [_NO_TOOLS_NUDGE],
+        max_tokens=MAX_RESPONSE_TOKENS,
     )
     cost = getattr(retry.usage, "cost", 0) or 0
-    clean = strip_leaked_tool_calls(retry.choices[0].message.content or "")
-    # If even the retry came back as pure tool syntax, fall back to whatever
-    # prose the original had rather than an empty turn.
-    return (clean or stripped), cost
+    retry_clean = _clean(retry.choices[0].message.content or "")
+    # If even the retry came back unusable, fall back to whatever survived
+    # the original cleanup rather than an empty turn.
+    return (retry_clean or cleaned), cost
 
 
 def _run_tool_calls(calls: list[tuple[str, dict]], tool_executor) -> list:
@@ -134,13 +210,15 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
 
     if not tools:
-        response = client.chat.completions.create(model=model, messages=full_messages)
+        response = client.chat.completions.create(
+            model=model, messages=full_messages, max_tokens=MAX_RESPONSE_TOKENS
+        )
         text, _ = _deliver(client, model, full_messages, response.choices[0].message.content)
         return text
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
-            model=model, messages=full_messages, tools=tools
+            model=model, messages=full_messages, tools=tools, max_tokens=MAX_RESPONSE_TOKENS
         )
         message = response.choices[0].message
 
@@ -163,7 +241,9 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
 
     # Hit the round cap right after executing a round of tool calls — the model
     # hasn't responded to those results yet. Force one final answer, no more tools.
-    response = client.chat.completions.create(model=model, messages=full_messages)
+    response = client.chat.completions.create(
+        model=model, messages=full_messages, max_tokens=MAX_RESPONSE_TOKENS
+    )
     text, _ = _deliver(client, model, full_messages, response.choices[0].message.content)
     return text
 
@@ -181,7 +261,9 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
     sources = []
 
     if not tools:
-        response = client.chat.completions.create(model=model, messages=full_messages)
+        response = client.chat.completions.create(
+            model=model, messages=full_messages, max_tokens=MAX_RESPONSE_TOKENS
+        )
         total_cost += getattr(response.usage, "cost", 0) or 0
         text, extra = _deliver(client, model, full_messages, response.choices[0].message.content)
         total_cost += extra
@@ -190,7 +272,7 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
-            model=model, messages=full_messages, tools=tools
+            model=model, messages=full_messages, tools=tools, max_tokens=MAX_RESPONSE_TOKENS
         )
         total_cost += getattr(response.usage, "cost", 0) or 0
         message = response.choices[0].message
@@ -234,7 +316,9 @@ def complete_streaming(client, model, system_prompt, messages, tools=None, tool_
                 }
             )
 
-    response = client.chat.completions.create(model=model, messages=full_messages)
+    response = client.chat.completions.create(
+        model=model, messages=full_messages, max_tokens=MAX_RESPONSE_TOKENS
+    )
     total_cost += getattr(response.usage, "cost", 0) or 0
     text, extra = _deliver(client, model, full_messages, response.choices[0].message.content)
     total_cost += extra
