@@ -117,21 +117,46 @@ def _render_transcript(transcript: list[dict]) -> str:
 # Same worst-case protection as MAX_RESPONSE_TOKENS in client.py — a report
 # synthesizes a whole transcript plus sources, so it gets more headroom than
 # a single agent turn.
-MAX_JUDGE_TOKENS = 2000
+#
+# Verified live against moonshotai/kimi-k2.5 before picking this number:
+# reasoning is on by default and isn't optional here — it consistently
+# spends ~90-95% of the completion budget on reasoning regardless of prompt
+# (1074/1130 tokens, 1281/1337, 962/1014 across three test calls), and a
+# tight cap (the original 2000, or client.py's original 1500) starves the
+# visible answer before reasoning finishes, which is what produced one real
+# empty verdict in prod. There's a reasoning.max_tokens knob that's supposed
+# to reserve budget for content separately, but it isn't reliably honored by
+# this model (tested: still came back empty at max_tokens=700 split
+# 300/400) — so the fix is just a generous total ceiling, not a split.
+# Disabling reasoning entirely was considered and rejected: it would
+# degrade judgment quality for no real benefit, since the actual fix here
+# is "give it enough room," not "stop it from thinking."
+MAX_JUDGE_TOKENS = 6000
 
 
 def _call(model: str, system: str, user_content: str) -> tuple[str, float]:
+    """Retries once if content comes back empty — a generous MAX_JUDGE_TOKENS
+    should make this rare, but it's a cheap backstop against whatever cause,
+    reasoning-budget or otherwise."""
     client = get_client("openrouter")
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
-        max_tokens=MAX_JUDGE_TOKENS,
-    )
-    cost = getattr(response.usage, "cost", 0) or 0
-    return response.choices[0].message.content or "", cost
+
+    def _once():
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=MAX_JUDGE_TOKENS,
+        )
+        cost = getattr(response.usage, "cost", 0) or 0
+        return response.choices[0].message.content or "", cost
+
+    text, cost = _once()
+    if text.strip():
+        return text, cost
+    retry_text, retry_cost = _once()
+    return retry_text, cost + retry_cost
 
 
 def _parse_verdict(raw: str) -> dict:

@@ -14,11 +14,20 @@ MAX_PARALLEL_TOOL_CALLS = 8
 
 # Bounds the worst case in both cost and wall-clock time if a model degrades
 # into a repetition loop instead of stopping (observed: 151K chars / $0.096 /
-# 13 minutes for one turn). ~1100-1200 words — generous headroom over what
-# the brevity instruction in agent_factory.py now asks for, but nowhere near
-# unbounded. Paired with dedupe_repeated_lines below: the cap limits how much
-# a loop can cost before it's cut off, the dedupe cleans up what's left.
-MAX_RESPONSE_TOKENS = 1500
+# 13 minutes for one turn) — paired with dedupe_repeated_lines below: the cap
+# limits how much a loop can cost before it's cut off, dedupe cleans up
+# what's left.
+#
+# 1500 was the first value tried here and it was wrong: reasoning-capable
+# models (confirmed live against kimi-k2.5, see judge.py's MAX_JUDGE_TOKENS
+# comment for the numbers) spend the large majority of their completion
+# budget on reasoning regardless of prompt, so a tight cap starves the
+# visible answer before reasoning finishes — content can come back empty.
+# 6000 gives real headroom for that while still bounding worst case to a
+# small fraction of the original incident, and reasoning stays fully
+# enabled — degrading answer quality to dodge a budget problem isn't the
+# right trade.
+MAX_RESPONSE_TOKENS = 6000
 
 PROVIDERS = {
     "openrouter": {
@@ -153,11 +162,31 @@ def _clean(text: str) -> str:
 
 
 def _deliver(client, model, full_messages, text):
-    """Final gate for every reply. Returns (clean_text, extra_cost)."""
-    text = text or ""
-    cleaned = _clean(text)
-    if cleaned == text or len(cleaned) >= _MIN_SURVIVING_CHARS:
+    """Final gate for every reply. Returns (clean_text, extra_cost).
+
+    Retries once only when there's genuinely nothing usable: content that
+    was empty from the start (a reasoning-heavy model can burn its whole
+    budget thinking and never reach a visible answer), or cleanup stripped
+    out a leak/repetition loop and too little survived. A short-but-clean
+    reply is never retried just for being short — brevity is the goal now,
+    not a defect. (An earlier version of this got that wrong two different
+    ways: first by skipping the retry whenever cleanup hadn't changed
+    anything — which silently let originally-empty content through
+    untouched — then by overcorrecting to retry on length alone, which
+    retried short legitimate replies that never needed it.)"""
+    original = text or ""
+    cleaned = _clean(original)
+
+    if not original.strip():
+        needs_retry = True
+    elif cleaned != original:
+        needs_retry = len(cleaned) < _MIN_SURVIVING_CHARS
+    else:
+        needs_retry = False
+
+    if not needs_retry:
         return cleaned, 0.0
+
     retry = client.chat.completions.create(
         model=model,
         messages=full_messages + [_NO_TOOLS_NUDGE],
