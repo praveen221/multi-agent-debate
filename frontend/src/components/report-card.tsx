@@ -7,7 +7,7 @@ function ReportList({ title, items }: { title: string; items: string[] }) {
   return (
     <div>
       <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">{title}</p>
-      <ul className="mt-1.5 list-disc space-y-1 pl-4 text-sm leading-relaxed">
+      <ul className="mt-1.5 list-disc space-y-1.5 pl-4 text-base leading-relaxed">
         {items.map((item, i) => (
           <li key={i}>{item}</li>
         ))}
@@ -28,10 +28,11 @@ export function ReportCard({ turn }: { turn: Turn }) {
       (report.cautions?.length ?? 0) > 0);
 
   return (
-    <div className="mx-auto w-full max-w-2xl">
-      <div className="rounded-xl border bg-muted/40 px-5 py-4">
+    <div className="w-full pl-11">
+      <div className="judge-comet rounded-xl border bg-muted/40 px-5 py-4">
         <p className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          <Scale className="h-3.5 w-3.5" /> Closing report
+          <Scale className="h-3.5 w-3.5 shrink-0 text-[#c4b5fd]" />
+          Closing report
         </p>
 
         {structured ? (
@@ -40,7 +41,7 @@ export function ReportCard({ turn }: { turn: Turn }) {
               <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
                 Where it landed
               </p>
-              <p className="mt-1.5 text-sm leading-relaxed">{turn.text}</p>
+              <p className="mt-1.5 text-base leading-relaxed">{turn.text}</p>
             </div>
             <ReportList title="Agreed" items={report?.agreements ?? []} />
             <ReportList title="Still contested" items={report?.contentions ?? []} />
@@ -52,7 +53,7 @@ export function ReportCard({ turn }: { turn: Turn }) {
                 <div className="mt-1.5 space-y-2.5">
                   {report!.evidence!.map((item, i) => (
                     <div key={i}>
-                      <p className="text-sm leading-relaxed">{item.claim}</p>
+                      <p className="text-base leading-relaxed">{item.claim}</p>
                       {item.sources.length > 0 && (
                         <div className="mt-1 flex flex-wrap gap-1.5">
                           {item.sources.map((s, j) => (

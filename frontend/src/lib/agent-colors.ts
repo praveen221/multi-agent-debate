@@ -18,10 +18,25 @@ const AVATAR_PALETTE = [
   "bg-[#0d1726] text-white",
 ];
 
+// A quiet left-border accent for turn blocks, same identity colors as the
+// avatars — lets the eye tell speakers apart while scanning without reading names.
+const BORDER_PALETTE = [
+  "border-[#ff7a17]/50",
+  "border-[#7c3aed]/50",
+  "border-[#a0c3ec]/50",
+  "border-[#ffc285]/50",
+  "border-[#c4b5fd]/50",
+  "border-[#a0c3ec]/30",
+];
+
 export function agentColorClass(index: number): string {
   return PALETTE[index % PALETTE.length];
 }
 
 export function agentAvatarClass(index: number): string {
   return AVATAR_PALETTE[index % AVATAR_PALETTE.length];
+}
+
+export function agentBorderClass(index: number): string {
+  return BORDER_PALETTE[index % BORDER_PALETTE.length];
 }

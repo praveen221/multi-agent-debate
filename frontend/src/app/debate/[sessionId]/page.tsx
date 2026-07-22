@@ -9,7 +9,6 @@ import {
   endSession,
   addSteerMessage,
   runJudge,
-  updateSessionJudge,
   shareSession,
   unshareSession,
   ApiError,
@@ -20,7 +19,7 @@ import {
 import { ReportCard } from "@/components/report-card";
 import { RatingPrompt } from "@/components/rating-prompt";
 import { markPrompted, shouldAutoPrompt } from "@/lib/rating-governor";
-import { agentAvatarClass } from "@/lib/agent-colors";
+import { agentAvatarClass, agentBorderClass } from "@/lib/agent-colors";
 import { shortModelName } from "@/lib/models";
 import { TurnMarkdown } from "@/components/turn-markdown";
 import { Button } from "@/components/ui/button";
@@ -57,8 +56,6 @@ function agentTurnsAtLastJudge(list: Turn[]): number {
   return last;
 }
 
-const DEFAULT_JUDGE_MODEL = "moonshotai/kimi-k2.5";
-
 const DIRECTION_LABELS: Record<string, string> = {
   converging: "Converging",
   diverging: "Diverging",
@@ -67,11 +64,29 @@ const DIRECTION_LABELS: Record<string, string> = {
   balanced: "Balanced",
 };
 
+// Direction is genuinely semantic (agreeing vs. not) — a restrained tint here
+// earns its keep even though the brand otherwise stays monochrome.
+const DIRECTION_STYLES: Record<string, string> = {
+  converging: "border-emerald-400/40 text-emerald-300/90",
+  balanced: "border-emerald-400/40 text-emerald-300/90",
+  diverging: "border-amber-400/40 text-amber-300/90",
+  off_topic: "border-amber-400/40 text-amber-300/90",
+  stalling: "border-amber-400/40 text-amber-300/90",
+};
+
 const JUDGE_ACTIONS = [
-  { action: "intervene", label: "Intervene with this" },
+  { action: "intervene", label: "Intervene" },
   { action: "pressure_test", label: "Pressure-test" },
   { action: "refocus", label: "Refocus" },
 ] as const;
+
+// The judge's mark: just the scales, tinted the same violet as the comet
+// border so the identity reads through the accent — no filled avatar chip,
+// which looked like a mascot next to the app's otherwise hairline chrome.
+function JudgeBadge() {
+  return <Scale className="h-3.5 w-3.5 shrink-0 text-[#c4b5fd]" />;
+}
+
 
 export default function DebateSessionPage() {
   const params = useParams<{ sessionId: string }>();
@@ -85,6 +100,10 @@ export default function DebateSessionPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   type SearchEntry = { query: string; done: boolean; titles: string[]; resultCount: number };
   const [searchTrace, setSearchTrace] = useState<SearchEntry[]>([]);
+  // The answer as it streams in, token by token, before the authoritative
+  // (cleaned) turn lands. token_reset clears it — the tokens so far were a
+  // tool-round preamble or an earlier attempt, not the final answer.
+  const [streamingText, setStreamingText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
@@ -99,7 +118,6 @@ export default function DebateSessionPage() {
     "verdict" | "intervene" | "pressure_test" | "refocus" | "report" | null
   >(null);
   const [lastJudgedAt, setLastJudgedAt] = useState(0);
-  const [patchingJudge, setPatchingJudge] = useState(false);
   const [shareId, setShareId] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
@@ -143,7 +161,7 @@ export default function DebateSessionPage() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [turns.length, loading, judging, ratingPrompt]);
+  }, [turns.length, loading, judging, ratingPrompt, streamingText]);
 
   useEffect(() => {
     function measure() {
@@ -158,6 +176,11 @@ export default function DebateSessionPage() {
   function avatarForSpeaker(speaker: string): string {
     const index = agents.findIndex((a) => a.name === speaker);
     return agentAvatarClass(index === -1 ? 0 : index);
+  }
+
+  function borderForSpeaker(speaker: string): string {
+    const index = agents.findIndex((a) => a.name === speaker);
+    return agentBorderClass(index === -1 ? 0 : index);
   }
 
   function initialsForSpeaker(speaker: string): string {
@@ -198,9 +221,14 @@ export default function DebateSessionPage() {
     setError(null);
     setLoading(true);
     setSearchTrace([]);
+    setStreamingText("");
     try {
       await nextTurnStream(sessionId, turns.length, (event) => {
-        if (event.type === "search") {
+        if (event.type === "token") {
+          setStreamingText((prev) => prev + event.text);
+        } else if (event.type === "token_reset") {
+          setStreamingText("");
+        } else if (event.type === "search") {
           setSearchTrace((prev) => [
             ...prev,
             { query: event.query, done: false, titles: [], resultCount: 0 },
@@ -233,6 +261,7 @@ export default function DebateSessionPage() {
             },
           ]);
           setSearchTrace([]);
+          setStreamingText("");
         }
       });
     } catch (e) {
@@ -257,6 +286,7 @@ export default function DebateSessionPage() {
     } finally {
       setLoading(false);
       setSearchTrace([]);
+      setStreamingText("");
     }
   }
 
@@ -457,27 +487,6 @@ export default function DebateSessionPage() {
     }
   }
 
-  async function toggleJudge() {
-    if (patchingJudge || status !== "active") return;
-    const next: JudgeConfig = judge
-      ? { ...judge, enabled: !judge.enabled }
-      : { enabled: true, model: DEFAULT_JUDGE_MODEL };
-    setPatchingJudge(true);
-    try {
-      const res = await updateSessionJudge(sessionId, next);
-      setJudge(res.judge);
-      if (res.judge.enabled) {
-        // Let the judge read the room right away if a full round already
-        // exists, instead of waiting for the next one.
-        setLastJudgedAt(Math.max(0, agentTurnCount(turns) - agents.length));
-      }
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setPatchingJudge(false);
-    }
-  }
-
   const midAutoplay = agentTurnCount(turns) < autoplayTarget;
   // Action buttons only render on the newest judge remark — acting on an
   // older one would inject a stale read of the debate.
@@ -490,6 +499,29 @@ export default function DebateSessionPage() {
   const turnsDoneThisCycle = Math.max(0, agentTurnCount(turns) - autoplayCycleStart);
   const roundNumber = Math.floor(turnsDoneThisCycle / turnsPerRound) + 1;
   const turnInRound = (turnsDoneThisCycle % turnsPerRound) + 1;
+
+  // Inline "Round N" dividers in the transcript: every time a fresh block of
+  // turnsPerRound agent turns begins (autoplay, Next round, a steer message,
+  // or a judge action all restart cleanly at a round boundary), label the
+  // first turn of that block. Skipped for round 1 — nothing to divide yet.
+  const roundStartLabel = new Map<number, number>();
+  {
+    let round = 1;
+    let countInRound = 0;
+    let sawFirstAgent = false;
+    for (const t of turns) {
+      if ((t.role || "agent") !== "agent") continue;
+      if (countInRound === 0 && sawFirstAgent) {
+        roundStartLabel.set(t.turn_index, round);
+      }
+      sawFirstAgent = true;
+      countInRound++;
+      if (countInRound >= turnsPerRound) {
+        countInRound = 0;
+        round++;
+      }
+    }
+  }
 
   if (loadingSession) {
     return (
@@ -545,194 +577,214 @@ export default function DebateSessionPage() {
               </h1>
             )}
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-col sm:items-end sm:gap-1.5">
-            <div className="flex items-center gap-1.5">
-              <Popover open={shareOpen} onOpenChange={setShareOpen}>
-                <PopoverTrigger
-                  render={
-                    <button
-                      onClick={handleShare}
-                      title={
-                        shareId
-                          ? "This discussion has a public link"
-                          : "Share this discussion publicly"
-                      }
-                      className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                        shareId ? "text-foreground" : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <Share2 className="h-3 w-3" />
-                      {shareId ? "Shared" : "Share"}
-                    </button>
-                  }
-                />
-                <PopoverContent className="w-80" align="end">
-                  {shareId ? (
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">Public link</p>
-                      <p className="text-xs text-muted-foreground">
-                        Anyone with this link can read this discussion.
-                        {shareCopied ? " Copied to clipboard." : ""}
-                      </p>
-                      <Input readOnly value={shareUrl} onFocus={(e) => e.target.select()} />
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() => {
-                            navigator.clipboard
-                              .writeText(shareUrl)
-                              .then(() => setShareCopied(true))
-                              .catch(() => {});
-                          }}
-                        >
-                          {shareCopied ? "Copied" : "Copy"}
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={handleUnshare}>
-                          Unshare
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      {shareBusy ? "Creating link…" : "Couldn't create the link — try again."}
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 sm:flex-col sm:items-end sm:gap-2.5">
+            <Popover open={shareOpen} onOpenChange={setShareOpen}>
+              <PopoverTrigger
+                render={
+                  <button
+                    onClick={handleShare}
+                    title={
+                      shareId
+                        ? "This discussion has a public link"
+                        : "Share this discussion publicly"
+                    }
+                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors hover:bg-white/5 ${
+                      shareId ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Share2 className="h-3 w-3" />
+                    {shareId ? "Shared" : "Share"}
+                  </button>
+                }
+              />
+              <PopoverContent className="w-80" align="end">
+                {shareId ? (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Public link</p>
+                    <p className="text-xs text-muted-foreground">
+                      Anyone with this link can read this discussion.
+                      {shareCopied ? " Copied to clipboard." : ""}
                     </p>
-                  )}
-                </PopoverContent>
-              </Popover>
-              {status === "active" && (
-              <button
-                onClick={toggleJudge}
-                disabled={patchingJudge}
-                title={
-                  judge?.enabled
-                    ? "The judge reviews each round — click to turn it off"
-                    : "Bring in a judge to review each round"
-                }
-                aria-label={judge?.enabled ? "Turn judge off" : "Turn judge on"
-                }
-                className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
-                  judge?.enabled
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Scale className="h-3 w-3" />
-                {judge?.enabled ? "Judge on" : "Judge off"}
-              </button>
-              )}
+                    <Input readOnly value={shareUrl} onFocus={(e) => e.target.select()} />
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          navigator.clipboard
+                            .writeText(shareUrl)
+                            .then(() => setShareCopied(true))
+                            .catch(() => {});
+                        }}
+                      >
+                        {shareCopied ? "Copied" : "Copy"}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={handleUnshare}>
+                        Unshare
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    {shareBusy ? "Creating link…" : "Couldn't create the link — try again."}
+                  </p>
+                )}
+              </PopoverContent>
+            </Popover>
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                Cost
+              </span>
+              <span className="font-mono text-xs tabular-nums text-foreground/80">
+                ${debateCost.toFixed(4)}
+              </span>
             </div>
-            <p className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-              this discussion: ${debateCost.toFixed(4)}
-            </p>
           </div>
         </div>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
-      <div className="mx-auto max-w-3xl space-y-6">
-        {turns.map((turn) =>
+      <div className="mx-auto max-w-3xl space-y-8">
+        {turns.flatMap((turn) => {
+          const divider = roundStartLabel.has(turn.turn_index) ? (
+            <div key={`round-${turn.turn_index}`} className="flex items-center justify-center">
+              <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground/60">
+                Round {roundStartLabel.get(turn.turn_index)}
+              </span>
+            </div>
+          ) : null;
+
+          const body =
           turn.role === "judge" && turn.verdict?.kind === "report" ? (
             <ReportCard key={turn.turn_index} turn={turn} />
           ) : turn.role === "judge" && turn.verdict?.kind === "intervention" ? (
-            <div key={turn.turn_index} className="mx-auto w-full max-w-xl">
-              <div className="rounded-xl border px-4 py-3">
-                <p className="flex items-center gap-1.5 text-xs font-medium">
-                  <Scale className="h-3.5 w-3.5" /> Judge interjects
+            <div key={turn.turn_index} className="w-full pl-11">
+              <div className="judge-comet rounded-xl border px-5 py-4">
+                <p className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  <JudgeBadge /> Judge interjects
                 </p>
-                <div className="mt-1.5">
+                <div className="mt-2">
                   <TurnMarkdown text={turn.text} />
                 </div>
               </div>
             </div>
           ) : turn.role === "judge" ? (
-            <div key={turn.turn_index} className="mx-auto w-full max-w-xl">
-              <div className="rounded-xl border bg-muted/40 px-4 py-3">
-                <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  <Scale className="h-3.5 w-3.5" /> Judge
+            <div key={turn.turn_index} className="w-full pl-11">
+              <div className="judge-comet rounded-xl border bg-muted/40 px-5 py-4">
+                <p className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  <JudgeBadge /> Judge
                   {turn.verdict?.direction && DIRECTION_LABELS[turn.verdict.direction] && (
-                    <span className="ml-1 rounded-full border px-2 py-0.5">
+                    <span
+                      className={`ml-1 rounded-full border px-2 py-0.5 normal-case tracking-normal ${
+                        DIRECTION_STYLES[turn.verdict.direction] || ""
+                      }`}
+                    >
                       {DIRECTION_LABELS[turn.verdict.direction]}
                     </span>
                   )}
                 </p>
-                <p className="mt-1.5 text-sm leading-relaxed">{turn.text}</p>
+                <p className="mt-2 text-base leading-relaxed text-foreground">{turn.text}</p>
                 {((turn.verdict?.agreements?.length ?? 0) > 0 ||
                   (turn.verdict?.contentions?.length ?? 0) > 0) && (
-                  <details className="mt-1.5">
-                    <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                  <details className="mt-3 group/details">
+                    <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground">
                       Details
                     </summary>
-                    <div className="mt-1.5 space-y-1.5 text-xs text-muted-foreground">
-                      {(turn.verdict?.agreements?.length ?? 0) > 0 && (
-                        <div>
-                          <p className="font-medium">Agreed on</p>
-                          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
-                            {turn.verdict!.agreements!.map((a, i) => (
-                              <li key={i}>{a}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {(turn.verdict?.contentions?.length ?? 0) > 0 && (
-                        <div>
-                          <p className="font-medium">Still contested</p>
-                          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
-                            {turn.verdict!.contentions!.map((c, i) => (
-                              <li key={i}>{c}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+                    <div className="mt-4">
+                      <div className="space-y-4">
+                        {(turn.verdict?.agreements?.length ?? 0) > 0 && (
+                          <div className="border-l-2 border-emerald-400/50 pl-3">
+                            <p className="mb-1.5 font-mono text-xs uppercase tracking-widest text-emerald-400/90">
+                              Agreed on
+                            </p>
+                            <ul className="space-y-1.5">
+                              {turn.verdict!.agreements!.map((a, i) => (
+                                <li key={i} className="text-sm leading-relaxed text-foreground/80">
+                                  {a}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {(turn.verdict?.contentions?.length ?? 0) > 0 && (
+                          <div className="border-l-2 border-amber-400/50 pl-3">
+                            <p className="mb-1.5 font-mono text-xs uppercase tracking-widest text-amber-400/90">
+                              Still contested
+                            </p>
+                            <ul className="space-y-1.5">
+                              {turn.verdict!.contentions!.map((c, i) => (
+                                <li key={i} className="text-sm leading-relaxed text-foreground/80">
+                                  {c}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </details>
                 )}
                 {status === "active" && turn.turn_index === lastJudgeRemarkIndex && (
-                  <div className="mt-2.5 flex flex-wrap gap-2">
+                  <div className="mt-4 border-t border-border/50 pt-3.5">
                     {turn.verdict?.suggested_action === "conclude" && (
-                      <AlertDialog>
-                        <AlertDialogTrigger
-                          render={
-                            <Button size="sm" disabled={judgeActionsDisabled}>
-                              Conclude &amp; generate report
-                            </Button>
-                          }
-                        />
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Conclude this discussion?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              The judge thinks this discussion has settled. No more rounds after
-                              this — the judge will write the closing report, and the transcript
-                              stays saved in your sidebar.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Keep discussing</AlertDialogCancel>
-                            <AlertDialogAction onClick={handleEnd}>Conclude</AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                      <div className="mb-3">
+                        <AlertDialog>
+                          <AlertDialogTrigger
+                            render={
+                              <Button size="sm" disabled={judgeActionsDisabled}>
+                                Conclude &amp; generate report
+                              </Button>
+                            }
+                          />
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Conclude this discussion?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                The judge thinks this discussion has settled. No more rounds after
+                                this — the judge will write the closing report, and the transcript
+                                stays saved in your sidebar.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Keep discussing</AlertDialogCancel>
+                              <AlertDialogAction onClick={handleEnd}>Conclude</AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
                     )}
-                    {JUDGE_ACTIONS.map(({ action, label }) => (
-                      <Button
-                        key={action}
-                        size="sm"
-                        variant={turn.verdict?.suggested_action === action ? "default" : "outline"}
-                        disabled={judgeActionsDisabled}
-                        onClick={() =>
-                          judgeAct(action, action === "intervene" ? turn.turn_index : undefined)
-                        }
-                      >
-                        {label}
-                      </Button>
-                    ))}
+                    <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                      Ask the judge to
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {JUDGE_ACTIONS.map(({ action, label }) => {
+                        const suggested = turn.verdict?.suggested_action === action;
+                        return (
+                          <Button
+                            key={action}
+                            size="sm"
+                            variant="outline"
+                            className={
+                              suggested
+                                ? "border-[#c4b5fd]/60 text-foreground"
+                                : "text-muted-foreground"
+                            }
+                            disabled={judgeActionsDisabled}
+                            onClick={() =>
+                              judgeAct(action, action === "intervene" ? turn.turn_index : undefined)
+                            }
+                          >
+                            {label}
+                          </Button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
           ) : turn.role === "human" ? (
             <div key={turn.turn_index} className="flex w-full justify-end">
-              <div className="max-w-[80%] rounded-2xl bg-secondary px-4 py-2">
+              <div className="max-w-2xl rounded-2xl bg-secondary px-4 py-2">
                 <p className="mb-0.5 text-xs font-medium text-muted-foreground">You</p>
                 <p className="whitespace-pre-wrap text-sm leading-relaxed">{turn.text}</p>
               </div>
@@ -745,28 +797,27 @@ export default function DebateSessionPage() {
               >
                 {initialsForSpeaker(turn.speaker)}
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="mb-1 text-sm">
-                  <span className="font-medium">{turn.speaker}</span>
+              <div className={`min-w-0 flex-1 border-l-2 pl-4 ${borderForSpeaker(turn.speaker)}`}>
+                <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="text-[15px] font-semibold text-foreground">{turn.speaker}</span>
                   {agentConfigFor(turn.speaker) && (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      · {shortModelName(agentConfigFor(turn.speaker)!.model)}
+                    <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {shortModelName(agentConfigFor(turn.speaker)!.model)}
                     </span>
                   )}
                   {agentConfigFor(turn.speaker)?.stance ? (
                     <span
-                      className="ml-1.5 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground"
+                      className="rounded-full border px-1.5 py-0.5 text-[11px] text-muted-foreground"
                       title={agentConfigFor(turn.speaker)!.stance}
                     >
                       arguing a side
                     </span>
                   ) : agentConfigFor(turn.speaker)?.mode === "advise" ? (
-                    <span className="ml-1.5 rounded-full border px-1.5 py-0.5 text-xs text-muted-foreground">
+                    <span className="rounded-full border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                       advisor
                     </span>
                   ) : null}
-                </p>
+                </div>
                 <TurnMarkdown text={turn.text} />
                 {turn.sources && turn.sources.length > 0 && (
                   <details className="mt-1">
@@ -806,45 +857,69 @@ export default function DebateSessionPage() {
                 )}
               </div>
             </div>
-          ),
-        )}
+          );
 
-        {loading && (
-          <div className="flex w-full gap-3">
-            <div
-              title={avatarTitleFor(agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "")}
-              className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "")}`}
-            >
-              {initialsForSpeaker(agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "?")}
-            </div>
-            <div className="min-w-0 flex-1 space-y-2 pt-1 text-sm text-muted-foreground">
-              {searchTrace.length === 0 ? (
-                <p className="flex items-center gap-2">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-current" />
-                  Thinking…
-                </p>
-              ) : (
-                searchTrace.map((s, i) => (
-                  <p key={i} className="flex items-center gap-2">
-                    <span
-                      className={`h-2 w-2 rounded-full bg-current ${s.done ? "" : "animate-pulse"}`}
-                    />
-                    {!s.done ? (
-                      <>searching: &ldquo;{s.query}&rdquo;</>
-                    ) : s.titles.length > 0 ? (
-                      <>
-                        found: &ldquo;{s.titles[0]}&rdquo;
-                        {s.resultCount > 1 ? ` +${s.resultCount - 1} more` : ""}
-                      </>
-                    ) : (
-                      <>no results for &ldquo;{s.query}&rdquo;</>
+          return divider ? [divider, body] : [body];
+        })}
+
+        {loading &&
+          (() => {
+            const nextName = agents[agentTurnCount(turns) % (agents.length || 1)]?.name || "";
+            const nextConfig = agentConfigFor(nextName);
+            return (
+              <div className="flex w-full gap-3">
+                <div
+                  title={avatarTitleFor(nextName)}
+                  className={`flex h-8 w-8 shrink-0 cursor-default items-center justify-center rounded-full text-xs font-medium ${avatarForSpeaker(nextName)}`}
+                >
+                  {initialsForSpeaker(nextName || "?")}
+                </div>
+                <div className={`min-w-0 flex-1 border-l-2 pl-4 ${borderForSpeaker(nextName)}`}>
+                  <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="text-[15px] font-semibold text-foreground">{nextName}</span>
+                    {nextConfig && (
+                      <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+                        {shortModelName(nextConfig.model)}
+                      </span>
                     )}
-                  </p>
-                ))
-              )}
-            </div>
-          </div>
-        )}
+                  </div>
+                  {streamingText ? (
+                    <div>
+                      <TurnMarkdown text={streamingText} />
+                      <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-pulse bg-foreground/60 align-text-bottom" />
+                    </div>
+                  ) : (
+                    <div className="space-y-2 pt-1 text-sm text-muted-foreground">
+                      {searchTrace.length === 0 ? (
+                        <p className="flex items-center gap-2">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-current" />
+                          Thinking…
+                        </p>
+                      ) : (
+                        searchTrace.map((s, i) => (
+                          <p key={i} className="flex items-center gap-2">
+                            <span
+                              className={`h-2 w-2 rounded-full bg-current ${s.done ? "" : "animate-pulse"}`}
+                            />
+                            {!s.done ? (
+                              <>searching: &ldquo;{s.query}&rdquo;</>
+                            ) : s.titles.length > 0 ? (
+                              <>
+                                found: &ldquo;{s.titles[0]}&rdquo;
+                                {s.resultCount > 1 ? ` +${s.resultCount - 1} more` : ""}
+                              </>
+                            ) : (
+                              <>no results for &ldquo;{s.query}&rdquo;</>
+                            )}
+                          </p>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
         {judging && (
           <div className="mx-auto w-full max-w-xl">

@@ -3,6 +3,7 @@ import os
 import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 from openai import OpenAI
 
@@ -227,7 +228,13 @@ def _run_tool_calls_progressive(calls: list[tuple[str, dict]], tool_executor):
             yield future_to_index[future], future.result()
 
 
+@lru_cache(maxsize=None)
 def get_client(provider: str) -> OpenAI:
+    # One client per provider, reused for the whole process. The OpenAI client
+    # is thread-safe and keeps an httpx connection pool, so every turn reuses a
+    # warm keep-alive connection to the provider instead of paying a fresh TLS
+    # handshake — agents are rebuilt each turn but no longer each spin up their
+    # own client.
     config = PROVIDERS[provider]
     api_key = os.environ.get(config["api_key_env"])
     if not api_key:
@@ -277,78 +284,171 @@ def complete(client, model, system_prompt, messages, tools=None, tool_executor=N
     return text
 
 
+def _streamed_call(client, model, full_messages, tools):
+    """One streamed completion. Yields {"type": "token", "text": delta} for
+    each visible content delta as it arrives (so the caller can forward it
+    live), then a final {"type": "_result", ...} carrying the assembled
+    content, the reconstructed tool_calls, and this call's USD cost.
+
+    Streaming a reasoning model doesn't make the reasoning any shorter — the
+    first content token still lands only after the model finishes thinking —
+    but once the answer starts, it flows word by word instead of the whole
+    thing appearing at once after a long silence. cost comes from the final
+    usage chunk (stream_options include_usage), verified live to carry the
+    same real cost the non-streamed path reads off response.usage."""
+    kwargs = dict(
+        model=model,
+        messages=full_messages,
+        max_tokens=MAX_RESPONSE_TOKENS,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    if tools:
+        kwargs["tools"] = tools
+
+    content_parts: list[str] = []
+    tool_acc: dict[int, dict] = {}
+    cost = 0.0
+    for chunk in client.chat.completions.create(**kwargs):
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            cost = getattr(usage, "cost", 0) or 0
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta.content:
+            content_parts.append(delta.content)
+            yield {"type": "token", "text": delta.content}
+        for tc in delta.tool_calls or []:
+            slot = tool_acc.setdefault(tc.index, {"id": None, "name": "", "arguments": ""})
+            if tc.id:
+                slot["id"] = tc.id
+            if tc.function:
+                if tc.function.name:
+                    slot["name"] += tc.function.name
+                if tc.function.arguments:
+                    slot["arguments"] += tc.function.arguments
+
+    tool_calls = [
+        {"id": s["id"], "type": "function",
+         "function": {"name": s["name"], "arguments": s["arguments"]}}
+        for _, s in sorted(tool_acc.items())
+    ]
+    yield {
+        "type": "_result",
+        "content": "".join(content_parts),
+        "tool_calls": tool_calls,
+        "cost": cost,
+    }
+
+
 def complete_streaming(client, model, system_prompt, messages, tools=None, tool_executor=None):
-    """Same tool loop as complete(), but yields progress along the way:
-    {"type": "tool_call", "name", "args"} for each tool call, then finally
-    {"type": "text", "text", "cost", "sources"} — cost is the sum of every
-    completion call's real USD cost (OpenRouter reports this on every
-    response), since one "turn" can involve several calls across the tool
-    loop. sources is every web_search call's {query, results} from this
-    turn, for persisting/displaying full grounding."""
+    """Same tool loop as complete(), but streams the answer as it's written and
+    yields progress along the way:
+      {"type": "token_reset"}          before each model call — the live
+                                       preview so far is a tool-round preamble
+                                       or an earlier attempt; drop it.
+      {"type": "token", "text"}        a visible content delta.
+      {"type": "tool_call", ...}       a search being fired.
+      {"type": "tool_result", ...}     a search landing.
+      {"type": "text", "text", ...}    the final, cleaned, authoritative reply.
+
+    The final "text" is the source of truth: it has been through _deliver
+    (leak/repetition cleanup, empty-content retry), so a caller shows the
+    streamed tokens live and then replaces them with this when it arrives —
+    identical in the common case, corrected when cleanup changed something.
+    cost is the sum of every completion call's real USD cost across the loop;
+    sources is every web_search call's {query, results} for grounding."""
     full_messages = [{"role": "system", "content": system_prompt}] + list(messages)
     total_cost = 0.0
     sources = []
 
+    def _run_call(tools_arg):
+        # Streams one model call, re-yielding its token events upward and
+        # returning the captured _result dict.
+        result = None
+        yield {"type": "token_reset"}
+        for event in _streamed_call(client, model, full_messages, tools_arg):
+            if event["type"] == "_result":
+                result = event
+            else:
+                yield event
+        yield {"type": "_return", "result": result}
+
     if not tools:
-        response = client.chat.completions.create(
-            model=model, messages=full_messages, max_tokens=MAX_RESPONSE_TOKENS
-        )
-        total_cost += getattr(response.usage, "cost", 0) or 0
-        text, extra = _deliver(client, model, full_messages, response.choices[0].message.content)
+        result = None
+        for event in _run_call(None):
+            if event["type"] == "_return":
+                result = event["result"]
+            else:
+                yield event
+        total_cost += result["cost"]
+        text, extra = _deliver(client, model, full_messages, result["content"])
         total_cost += extra
         yield {"type": "text", "text": text, "cost": total_cost, "sources": sources}
         return
 
     for _ in range(MAX_TOOL_ROUNDS):
-        response = client.chat.completions.create(
-            model=model, messages=full_messages, tools=tools, max_tokens=MAX_RESPONSE_TOKENS
-        )
-        total_cost += getattr(response.usage, "cost", 0) or 0
-        message = response.choices[0].message
+        result = None
+        for event in _run_call(tools):
+            if event["type"] == "_return":
+                result = event["result"]
+            else:
+                yield event
+        total_cost += result["cost"]
 
-        if not message.tool_calls:
-            text, extra = _deliver(client, model, full_messages, message.content)
+        if not result["tool_calls"]:
+            text, extra = _deliver(client, model, full_messages, result["content"])
             total_cost += extra
             yield {"type": "text", "text": text, "cost": total_cost, "sources": sources}
             return
 
-        full_messages.append(message.model_dump(exclude_unset=True))
+        assistant_msg = {"role": "assistant", "tool_calls": result["tool_calls"]}
+        if result["content"]:
+            assistant_msg["content"] = result["content"]
+        full_messages.append(assistant_msg)
 
         # Announce every call in the batch up front (so the UI shows all
         # pending searches at once, not a trickle), then run them together
         # and report each one as it lands — real progress, not a spinner.
-        parsed = [(tc.function.name, json.loads(tc.function.arguments)) for tc in message.tool_calls]
+        parsed = [
+            (tc["function"]["name"], json.loads(tc["function"]["arguments"]))
+            for tc in result["tool_calls"]
+        ]
         for name, args in parsed:
             yield {"type": "tool_call", "name": name, "args": args}
 
         results: list = [None] * len(parsed)
-        for index, result in _run_tool_calls_progressive(parsed, tool_executor):
-            results[index] = result
+        for index, res in _run_tool_calls_progressive(parsed, tool_executor):
+            results[index] = res
             name, args = parsed[index]
             if name == "web_search":
                 yield {
                     "type": "tool_result",
                     "name": name,
                     "query": args.get("query", ""),
-                    "result_count": len(result),
-                    "titles": [r.get("title", "") for r in result[:2] if r.get("title")],
+                    "result_count": len(res),
+                    "titles": [r.get("title", "") for r in res[:2] if r.get("title")],
                 }
 
-        for tool_call, (name, args), result in zip(message.tool_calls, parsed, results):
+        for tool_call, (name, args), res in zip(result["tool_calls"], parsed, results):
             if name == "web_search":
-                sources.append({"query": args.get("query", ""), "results": result})
+                sources.append({"query": args.get("query", ""), "results": res})
             full_messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result),
+                    "tool_call_id": tool_call["id"],
+                    "content": json.dumps(res),
                 }
             )
 
-    response = client.chat.completions.create(
-        model=model, messages=full_messages, max_tokens=MAX_RESPONSE_TOKENS
-    )
-    total_cost += getattr(response.usage, "cost", 0) or 0
-    text, extra = _deliver(client, model, full_messages, response.choices[0].message.content)
+    result = None
+    for event in _run_call(None):
+        if event["type"] == "_return":
+            result = event["result"]
+        else:
+            yield event
+    total_cost += result["cost"]
+    text, extra = _deliver(client, model, full_messages, result["content"])
     total_cost += extra
     yield {"type": "text", "text": text, "cost": total_cost, "sources": sources}

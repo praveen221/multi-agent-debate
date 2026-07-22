@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -19,7 +20,12 @@ import titles as titles_module
 from debate import build_messages
 
 from api.auth import get_current_user_id
-from api.credits import add_spend, check_within_budget, get_or_create_credit_row
+from api.credits import (
+    add_spend,
+    assert_within_budget,
+    check_within_budget,
+    get_or_create_credit_row,
+)
 from api.db import get_db
 from api.schemas import (
     CreateSessionRequest,
@@ -170,21 +176,41 @@ def next_turn(
     body: NextTurnRequest | None = None,
     user_id: str = Depends(get_current_user_id),
 ):
-    session = _load_session(session_id, user_id)
+    db = get_db()
+
+    # The session row, the transcript, and the credit row don't depend on each
+    # other — fetch them together so the turn pays one round-trip of DB latency
+    # up front instead of three back to back. The credit row fetched here is
+    # reused at the end for add_spend, so the whole turn reads it once.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_session = pool.submit(
+            lambda: db.table("mad_sessions")
+            .select("*")
+            .eq("id", session_id)
+            .maybe_single()
+            .execute()
+        )
+        f_turns = pool.submit(
+            lambda: db.table("mad_turns")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("turn_index")
+            .execute()
+        )
+        f_credit = pool.submit(get_or_create_credit_row, user_id)
+        session_res = f_session.result()
+        transcript = f_turns.result().data
+        credit_row = f_credit.result()
+
+    session = session_res.data if session_res else None
+    if session is None or session.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Not your session")
     if session["status"] != "active":
         raise HTTPException(status_code=400, detail="Debate has already ended")
+    assert_within_budget(credit_row)
 
-    check_within_budget(user_id)
-
-    db = get_db()
-    transcript = (
-        db.table("mad_turns")
-        .select("*")
-        .eq("session_id", session_id)
-        .order("turn_index")
-        .execute()
-        .data
-    )
     turn_index = len(transcript)
 
     if body and body.expected_turn_index is not None and body.expected_turn_index != turn_index:
@@ -211,7 +237,11 @@ def next_turn(
             cost = 0.0
             sources = []
             for event in next_agent.respond_streaming(messages):
-                if event["type"] == "tool_call" and event["name"] == "web_search":
+                if event["type"] == "token":
+                    yield json.dumps({"type": "token", "text": event["text"]}) + "\n"
+                elif event["type"] == "token_reset":
+                    yield json.dumps({"type": "token_reset"}) + "\n"
+                elif event["type"] == "tool_call" and event["name"] == "web_search":
                     query = event["args"].get("query", "")
                     yield json.dumps({"type": "search", "query": query}) + "\n"
                 elif event["type"] == "tool_result" and event["name"] == "web_search":
@@ -242,7 +272,7 @@ def next_turn(
                     "sources": sources,
                 }
             ).execute()
-            total_spent = add_spend(user_id, cost)
+            total_spent = add_spend(user_id, cost, row=credit_row)
             yield (
                 json.dumps(
                     {

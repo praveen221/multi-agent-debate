@@ -108,6 +108,8 @@ export type PublicDebate = {
   turns: Turn[];
 };
 export type StreamEvent =
+  | { type: "token"; text: string }
+  | { type: "token_reset" }
   | { type: "search"; query: string }
   | { type: "search_result"; query: string; result_count: number; titles: string[] }
   | {

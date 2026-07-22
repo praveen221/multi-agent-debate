@@ -106,3 +106,52 @@
     letter-spacing: -0.03em;
   }
 }
+
+/* The judge's signature: a violet comet chases the card's border on a loop,
+   giving judge cards a persistent "alive, distinct participant" identity
+   that plain agent/human turns don't have. Pure CSS — a masked conic-gradient
+   ring, clipped to just the ring by mask-composite.
+   Only --judge-angle (a registered, interpolatable custom property) animates
+   — never a transform on the ring element itself. Rotating the element was
+   the earlier bug: a non-square rounded-rect ring spun as a rigid shape
+   tilts its corners off the card's actual edges, producing a stray diagonal
+   line cutting across the card instead of a border that hugs it. */
+@property --judge-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes judge-comet-spin {
+  to {
+    --judge-angle: 360deg;
+  }
+}
+
+.judge-comet {
+  position: relative;
+}
+
+.judge-comet::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  --judge-angle: 0deg;
+  background: conic-gradient(
+    from var(--judge-angle),
+    transparent 0deg,
+    transparent 268deg,
+    rgba(124, 58, 237, 0.85) 300deg,
+    rgba(196, 181, 253, 1) 330deg,
+    rgba(255, 255, 255, 0.95) 344deg,
+    rgba(196, 181, 253, 1) 356deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: judge-comet-spin 6s linear infinite;
+  pointer-events: none;
+}
