@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Scale, Share2 } from "lucide-react";
+import { Scale, Share2, Sparkles } from "lucide-react";
 import {
   getSession,
   nextTurnStream,
@@ -11,19 +12,33 @@ import {
   runJudge,
   shareSession,
   unshareSession,
+  startSingle,
+  singleNext,
+  singleIntervene,
+  listModels,
   ApiError,
   type AgentDraft,
+  type FollowupOption,
   type JudgeConfig,
+  type ModelInfo,
+  type SingleAgentConfig,
+  type SingleStreamEvent,
+  type SingleTurn,
   type Turn,
 } from "@/lib/api";
 import { ReportCard } from "@/components/report-card";
 import { RatingPrompt } from "@/components/rating-prompt";
+import { SingleTrack, type SearchEntry } from "@/components/single-track";
+import { ComparisonPrompt } from "@/components/comparison-prompt";
 import { markPrompted, shouldAutoPrompt } from "@/lib/rating-governor";
 import { agentAvatarClass, agentBorderClass } from "@/lib/agent-colors";
 import { shortModelName } from "@/lib/models";
+import { ModelCombobox } from "@/components/model-combobox";
 import { TurnMarkdown } from "@/components/turn-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -101,7 +116,6 @@ export default function DebateSessionPage() {
   const [intake, setIntake] = useState<{ interpretation: string; resolved: boolean } | null>(null);
   const [status, setStatus] = useState("active");
   const [turns, setTurns] = useState<Turn[]>([]);
-  type SearchEntry = { query: string; done: boolean; titles: string[]; resultCount: number };
   const [searchTrace, setSearchTrace] = useState<SearchEntry[]>([]);
   // The answer as it streams in, token by token, before the authoritative
   // (cleaned) turn lands. token_reset clears it — the tokens so far were a
@@ -126,7 +140,23 @@ export default function DebateSessionPage() {
   const [shareBusy, setShareBusy] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [ratingPrompt, setRatingPrompt] = useState<"conclude" | "rounds" | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // --- Single-model track (Phase 3) ---
+  const [activeTab, setActiveTab] = useState<"mad" | "single" | "side">("mad");
+  const [singleAgent, setSingleAgent] = useState<SingleAgentConfig | null>(null);
+  const [singleTurns, setSingleTurns] = useState<SingleTurn[]>([]);
+  const [singleOptions, setSingleOptions] = useState<FollowupOption[]>([]);
+  const [singleLoading, setSingleLoading] = useState(false);
+  const [singleStreamingText, setSingleStreamingText] = useState("");
+  const [singleSearchTrace, setSingleSearchTrace] = useState<SearchEntry[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [startSingleOpen, setStartSingleOpen] = useState(false);
+  const [singleModelChoice, setSingleModelChoice] = useState("anthropic/claude-sonnet-5");
+  const [singleSearchChoice, setSingleSearchChoice] = useState(true);
+  const [showComparison, setShowComparison] = useState(false);
+
+  const debateScrollRef = useRef<HTMLDivElement>(null);
+  const singleScrollRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLHeadingElement>(null);
   const [topicOverflowing, setTopicOverflowing] = useState(false);
   const flushingSteerRef = useRef(false);
@@ -135,7 +165,7 @@ export default function DebateSessionPage() {
     setLoadingSession(true);
     setError(null);
     getSession(sessionId)
-      .then(({ session, turns }) => {
+      .then(({ session, turns, single_turns }) => {
         setTopic(session.topic);
         // Old sessions predate this column — fall back to the full topic.
         setSubject(session.subject || session.topic);
@@ -146,6 +176,11 @@ export default function DebateSessionPage() {
         setAgents(session.agents);
         setJudge(session.judge || null);
         setShareId(session.share_id || null);
+        setSingleAgent(session.single_agent ?? null);
+        const st = single_turns ?? [];
+        setSingleTurns(st);
+        const lastSingle = [...st].reverse().find((t) => t.role === "single");
+        setSingleOptions(lastSingle?.options ?? []);
         setLastJudgedAt(agentTurnsAtLastJudge(turns));
         const startCount = turns.length === 0 ? 0 : agentTurnCount(turns);
         setAutoplayCycleStart(startCount);
@@ -156,16 +191,24 @@ export default function DebateSessionPage() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (!loadingSession && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (!loadingSession && debateScrollRef.current) {
+      debateScrollRef.current.scrollTop = debateScrollRef.current.scrollHeight;
     }
   }, [loadingSession, sessionId]);
 
+  // The debate and single columns scroll independently — in Side by Side each
+  // keeps its own position, so streaming on one side never yanks the other away.
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (debateScrollRef.current) {
+      debateScrollRef.current.scrollTop = debateScrollRef.current.scrollHeight;
     }
-  }, [turns.length, loading, judging, ratingPrompt, streamingText]);
+  }, [turns.length, loading, judging, ratingPrompt, streamingText, activeTab]);
+
+  useEffect(() => {
+    if (singleScrollRef.current) {
+      singleScrollRef.current.scrollTop = singleScrollRef.current.scrollHeight;
+    }
+  }, [singleTurns.length, singleLoading, singleStreamingText, singleOptions, activeTab]);
 
   useEffect(() => {
     function measure() {
@@ -294,6 +337,106 @@ export default function DebateSessionPage() {
     }
   }
 
+  // --- Single-model track handlers ---
+
+  // Load the model list for the single-model picker (same source and picker as
+  // the compose screen's Configure panel).
+  useEffect(() => {
+    listModels().then(setModels).catch(() => {});
+  }, []);
+
+  // Drive one single-model stream, mirroring the debate's token/search/turn
+  // handling. Shared by start, follow-ups, and fanned-in interventions.
+  async function consumeSingle(run: (onEvent: (e: SingleStreamEvent) => void) => Promise<void>) {
+    setSingleLoading(true);
+    setSingleStreamingText("");
+    setSingleSearchTrace([]);
+    try {
+      await run((event) => {
+        if (event.type === "token") {
+          setSingleStreamingText((prev) => prev + event.text);
+        } else if (event.type === "token_reset") {
+          setSingleStreamingText("");
+        } else if (event.type === "search") {
+          setSingleSearchTrace((prev) => [
+            ...prev,
+            { query: event.query, done: false, titles: [], resultCount: 0 },
+          ]);
+        } else if (event.type === "search_result") {
+          setSingleSearchTrace((prev) => {
+            const i = prev.findIndex((s) => s.query === event.query && !s.done);
+            if (i === -1) return prev;
+            const next = [...prev];
+            next[i] = { ...next[i], done: true, titles: event.titles, resultCount: event.result_count };
+            return next;
+          });
+        } else if (event.type === "single_intervention") {
+          setSingleTurns((prev) => [
+            ...prev,
+            { turn_index: event.turn_index, role: event.role, text: event.text },
+          ]);
+        } else if (event.type === "single_turn") {
+          setSingleTurns((prev) => [
+            ...prev,
+            {
+              turn_index: event.turn_index,
+              role: "single",
+              text: event.text,
+              cost_usd: event.cost_usd,
+              sources: event.sources,
+              option_label: event.option_label,
+              options: event.options,
+            },
+          ]);
+          setSingleOptions(event.options || []);
+          setSingleSearchTrace([]);
+          setSingleStreamingText("");
+        }
+      });
+    } catch (e) {
+      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 402) setBudgetExceeded(true);
+      // Resync the track from the DB — a dropped stream may have saved the turn.
+      try {
+        const { single_turns } = await getSession(sessionId);
+        const st = single_turns ?? [];
+        setSingleTurns(st);
+        setSingleOptions([...st].reverse().find((t) => t.role === "single")?.options ?? []);
+      } catch {
+        /* keep what we have */
+      }
+    } finally {
+      setSingleLoading(false);
+      setSingleStreamingText("");
+      setSingleSearchTrace([]);
+    }
+  }
+
+  async function startSingleTrack() {
+    if (singleLoading) return;
+    setStartSingleOpen(false);
+    setSingleAgent({ model: singleModelChoice, use_search: singleSearchChoice });
+    setActiveTab("single");
+    await consumeSingle((onEvent) =>
+      startSingle(sessionId, singleModelChoice, singleSearchChoice, onEvent),
+    );
+  }
+
+  function runSingleOption(o: FollowupOption) {
+    if (singleLoading) return;
+    setSingleOptions([]);
+    consumeSingle((onEvent) => singleNext(sessionId, o.instruction, o.label, onEvent));
+  }
+
+  // A debate intervention fanned into the single track so both react to the same
+  // steer / pressure-test / refocus. Fire-and-forget: it streams in the Single
+  // tab independently and must never block the debate's own flow.
+  function fanOutToSingle(kind: "human" | "judge", text: string) {
+    if (!singleAgent || singleLoading) return;
+    setSingleOptions([]);
+    void consumeSingle((onEvent) => singleIntervene(sessionId, kind, text, onEvent));
+  }
+
   // Single mechanism drives every kind of auto-continuation: the initial
   // 2-round autoplay, the fresh round after a steer message, and even the
   // very first turn (turns.length === 0 < autoplayTarget already holds).
@@ -334,6 +477,8 @@ export default function DebateSessionPage() {
             setAutoplayTarget(restartCount + agents.length);
             return next;
           });
+          // The same steer reaches the single track (if one is running).
+          fanOutToSingle("human", text);
         })
         .catch((e) => setError((e as Error).message))
         .finally(() => {
@@ -383,9 +528,13 @@ export default function DebateSessionPage() {
   async function handleEnd() {
     await endSession(sessionId).catch(() => {});
     setStatus("ended");
-    // The report takes a few seconds — that wait is the ideal moment for a
-    // one-tap rating (governed: max one auto-prompt per discussion).
-    if (shouldAutoPrompt(sessionId)) {
+    // The report wait is the ideal moment to ask one quick question. When a
+    // single model ran alongside, that question is the benchmark comparison
+    // (its own signal); otherwise it's the usual one-tap star rating. Never
+    // both — one prompt at conclude, governed.
+    if (singleAgent && singleTurns.some((t) => t.role === "single")) {
+      setShowComparison(true);
+    } else if (shouldAutoPrompt(sessionId)) {
       markPrompted(sessionId);
       setRatingPrompt("conclude");
     }
@@ -484,6 +633,9 @@ export default function DebateSessionPage() {
         setLastJudgedAt(count);
         return next;
       });
+      // The judge's remark reaches the single track too, so it faces the same
+      // challenge / refocus the debate does.
+      fanOutToSingle("judge", turn.text);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -538,7 +690,7 @@ export default function DebateSessionPage() {
   return (
     <main className="flex h-full flex-col">
       <div className="shrink-0 border-b px-4 py-4 sm:px-6 sm:py-6">
-        <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="mx-auto flex max-w-4xl flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
@@ -587,9 +739,9 @@ export default function DebateSessionPage() {
                 </span>{" "}
                 <span className="text-foreground/90">{intake.interpretation}</span>
                 {" · "}
-                <a href="/debate" className="underline underline-offset-2 hover:text-foreground">
+                <Link href="/debate" className="underline underline-offset-2 hover:text-foreground">
                   not right?
-                </a>
+                </Link>
               </p>
             )}
           </div>
@@ -658,8 +810,99 @@ export default function DebateSessionPage() {
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
-      <div className="mx-auto max-w-3xl space-y-8">
+      {(singleAgent || agentTurnCount(turns) > 0) && (
+        <div className="shrink-0 border-b px-4 sm:px-6">
+          <div className="flex items-center justify-center py-2">
+            {singleAgent ? (
+              <div className="flex items-center gap-6">
+                {(["mad", "single", "side"] as const).map((id) => (
+                  <button
+                    key={id}
+                    onClick={() => setActiveTab(id)}
+                    className={`relative py-1.5 text-sm transition-colors ${
+                      activeTab === id
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {id === "mad"
+                      ? "MAD · Multi-Agent"
+                      : id === "single"
+                        ? "Single Agent"
+                        : "Side by Side"}
+                    {activeTab === id && (
+                      <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-foreground" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              status === "active" && (
+                <Popover open={startSingleOpen} onOpenChange={setStartSingleOpen}>
+                  <PopoverTrigger
+                    render={
+                      <Button size="sm" className="gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Also get a single-model take
+                      </Button>
+                    }
+                  />
+                  <PopoverContent align="center" className="w-80">
+                    <p className="mb-1 text-sm font-medium">Run one strong model too</p>
+                    <p className="mb-3 text-xs text-muted-foreground">
+                      It answers the same topic on its own, so you can compare it against the
+                      debate. You steer it with suggested follow-ups, not a chat box.
+                    </p>
+                    <div className="space-y-3">
+                      <div className="space-y-1.5">
+                        <Label>Model</Label>
+                        <ModelCombobox
+                          models={models}
+                          value={singleModelChoice}
+                          onChange={setSingleModelChoice}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={singleSearchChoice}
+                          onCheckedChange={setSingleSearchChoice}
+                        />
+                        <Label>Give it web search</Label>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        onClick={startSingleTrack}
+                        disabled={!singleModelChoice || budgetExceeded}
+                      >
+                        Start single-model answer
+                      </Button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1">
+      <div
+        ref={debateScrollRef}
+        className={`overflow-y-auto px-4 py-6 sm:px-6 sm:py-8 ${
+          activeTab === "single"
+            ? "hidden"
+            : activeTab === "side"
+              ? "min-w-0 flex-1 border-r"
+              : "flex-1"
+        }`}
+      >
+      <div className={activeTab === "side" ? "space-y-8" : "mx-auto max-w-4xl space-y-8"}>
+        {activeTab === "side" && (
+          <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            MAD · Multi-Agent
+          </p>
+        )}
         {turns.flatMap((turn) => {
           const divider = roundStartLabel.has(turn.turn_index) ? (
             <div key={`round-${turn.turn_index}`} className="flex items-center justify-center">
@@ -957,9 +1200,34 @@ export default function DebateSessionPage() {
         )}
       </div>
       </div>
+      <div
+        ref={singleScrollRef}
+        className={`overflow-y-auto px-4 py-6 sm:px-6 sm:py-8 ${
+          activeTab === "mad" ? "hidden" : activeTab === "side" ? "min-w-0 flex-1" : "flex-1"
+        }`}
+      >
+      <div className={activeTab === "side" ? "space-y-4" : "mx-auto max-w-4xl"}>
+        {activeTab === "side" && (
+          <p className="mb-6 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            Single Agent
+          </p>
+        )}
+        <SingleTrack
+          turns={singleTurns}
+          model={singleAgent?.model ?? null}
+          streamingText={singleStreamingText}
+          searchTrace={singleSearchTrace}
+          loading={singleLoading}
+          options={singleOptions}
+          onOption={runSingleOption}
+          status={status}
+        />
+      </div>
+      </div>
+      </div>
 
       <div className="shrink-0 border-t px-4 py-3 sm:px-6 sm:py-4">
-        <div className="mx-auto max-w-3xl">
+        <div className="mx-auto max-w-4xl">
           {budgetExceeded ? (
             <Card className="mb-4 border-destructive/50">
               <CardContent className="pt-6 text-sm">
@@ -1078,6 +1346,10 @@ export default function DebateSessionPage() {
           </div>
         </div>
       </div>
+
+      {showComparison && (
+        <ComparisonPrompt sessionId={sessionId} onClose={() => setShowComparison(false)} />
+      )}
     </main>
   );
 }

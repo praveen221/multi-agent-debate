@@ -89,8 +89,10 @@ export type SessionDetail = {
     judge?: JudgeConfig | null;
     share_id?: string | null;
     intake?: { interpretation: string; resolved: boolean } | null;
+    single_agent?: SingleAgentConfig | null;
   };
   turns: Turn[];
+  single_turns?: SingleTurn[];
 };
 export type PublicAgent = {
   name: string;
@@ -121,6 +123,42 @@ export type StreamEvent =
       text: string;
       cost_usd: number;
       sources?: Source[];
+      total_spent_usd: number;
+    };
+
+// --- Single-model track (Phase 3) ---
+export type SingleAgentConfig = { model: string; use_search: boolean };
+export type FollowupOption = { label: string; instruction: string };
+export type SingleTurn = {
+  turn_index: number;
+  role: "single" | "human" | "judge";
+  text: string;
+  sources?: Source[];
+  option_label?: string | null;
+  options?: FollowupOption[] | null;
+  cost_usd?: number;
+};
+export type SingleStreamEvent =
+  | { type: "token"; text: string }
+  | { type: "token_reset" }
+  | { type: "search"; query: string }
+  | { type: "search_result"; query: string; result_count: number; titles: string[] }
+  | {
+      type: "single_intervention";
+      turn_index: number;
+      role: "human" | "judge";
+      speaker: string;
+      text: string;
+    }
+  | {
+      type: "single_turn";
+      turn_index: number;
+      role: "single";
+      text: string;
+      cost_usd: number;
+      sources?: Source[];
+      option_label?: string | null;
+      options: FollowupOption[];
       total_spent_usd: number;
     };
 
@@ -249,16 +287,15 @@ export function addSteerMessage(sessionId: string, text: string) {
   }) as Promise<{ turn_index: number; role: "human"; speaker: string; text: string }>;
 }
 
-export async function nextTurnStream(
-  sessionId: string,
-  expectedTurnIndex: number,
-  onEvent: (event: StreamEvent) => void,
-) {
+// Read an NDJSON stream, dispatching each line to onEvent. A mid-stream
+// {type:"error"} is thrown so callers need only one catch block, not a special
+// case. Shared by the debate turn stream and the single-model track.
+async function streamNdjson<T>(url: string, body: unknown, onEvent: (event: T) => void) {
   const headers = { "Content-Type": "application/json", ...(await authHeader()) };
-  const res = await fetch(`${API_URL}/api/sessions/${sessionId}/next`, {
+  const res = await fetch(`${API_URL}${url}`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ expected_turn_index: expectedTurnIndex }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok || !res.body) await throwForResponse(res);
@@ -276,10 +313,54 @@ export async function nextTurnStream(
     for (const line of lines) {
       if (!line.trim()) continue;
       const parsed = JSON.parse(line);
-      // A mid-stream failure — surface it the same way a rejected fetch
-      // would, so callers only need one catch block, not a special case.
       if (parsed.type === "error") throw new Error(parsed.message);
-      onEvent(parsed as StreamEvent);
+      onEvent(parsed as T);
     }
   }
+}
+
+export function nextTurnStream(
+  sessionId: string,
+  expectedTurnIndex: number,
+  onEvent: (event: StreamEvent) => void,
+) {
+  return streamNdjson(
+    `/api/sessions/${sessionId}/next`,
+    { expected_turn_index: expectedTurnIndex },
+    onEvent,
+  );
+}
+
+export function startSingle(
+  sessionId: string,
+  model: string,
+  useSearch: boolean,
+  onEvent: (event: SingleStreamEvent) => void,
+) {
+  return streamNdjson(`/api/sessions/${sessionId}/single/start`, { model, use_search: useSearch }, onEvent);
+}
+
+export function singleNext(
+  sessionId: string,
+  instruction: string,
+  label: string,
+  onEvent: (event: SingleStreamEvent) => void,
+) {
+  return streamNdjson(`/api/sessions/${sessionId}/single/next`, { instruction, label }, onEvent);
+}
+
+export function singleIntervene(
+  sessionId: string,
+  kind: "human" | "judge",
+  text: string,
+  onEvent: (event: SingleStreamEvent) => void,
+) {
+  return streamNdjson(`/api/sessions/${sessionId}/single/intervene`, { kind, text }, onEvent);
+}
+
+export function submitComparison(sessionId: string, preference: "single" | "multi") {
+  return apiFetch(`/api/sessions/${sessionId}/comparison`, {
+    method: "POST",
+    body: JSON.stringify({ preference }),
+  }) as Promise<{ preference: "single" | "multi" }>;
 }

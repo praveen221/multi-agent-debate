@@ -73,6 +73,31 @@ class JudgeActionRequest(BaseModel):
     source_turn_index: int | None = None
 
 
+class SingleStartRequest(BaseModel):
+    # Which single model to run alongside the debate, and whether it searches.
+    model: str = Field(min_length=1, max_length=120)
+    use_search: bool = True
+
+
+class SingleNextRequest(BaseModel):
+    # A picked follow-up option — instruction is sent to the model, label is
+    # recorded on the turn it produces. The user never types a raw prompt.
+    instruction: str = Field(min_length=1, max_length=1000)
+    label: str = Field(default="", max_length=120)
+
+
+class SingleInterveneRequest(BaseModel):
+    # A debate intervention fanned into the single track: a human steer or a
+    # judge interjection, which the single model then responds to.
+    kind: Literal["human", "judge"]
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class ComparisonRequest(BaseModel):
+    # The benchmark verdict: which track the user found more useful.
+    preference: Literal["single", "multi"]
+
+
 class FeedbackRequest(BaseModel):
     category: Literal["bug", "idea", "other"] | None = None
     # A rating prompt may send only stars (empty message), the manual box only

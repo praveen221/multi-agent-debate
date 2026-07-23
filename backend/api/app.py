@@ -18,6 +18,7 @@ import agent_factory
 import concierge as concierge_module
 import judge as judge_module
 import models as models_module
+import single as single_module
 import titles as titles_module
 from debate import build_messages
 
@@ -30,11 +31,15 @@ from api.credits import (
 )
 from api.db import get_db
 from api.schemas import (
+    ComparisonRequest,
     ConciergeRequest,
     CreateSessionRequest,
     FeedbackRequest,
     JudgeActionRequest,
     NextTurnRequest,
+    SingleInterveneRequest,
+    SingleNextRequest,
+    SingleStartRequest,
     SteerMessageRequest,
     UpdateSessionRequest,
 )
@@ -262,15 +267,27 @@ def _load_session(session_id: str, user_id: str) -> dict:
 def get_session(session_id: str, user_id: str = Depends(get_current_user_id)):
     session = _load_session(session_id, user_id)
     db = get_db()
-    turns = (
-        db.table("mad_turns")
-        .select("*")
-        .eq("session_id", session_id)
-        .order("turn_index")
-        .execute()
-        .data
-    )
-    return {"session": session, "turns": turns}
+    # The debate transcript and the (usually absent) single-model track are
+    # independent reads — fetch them together so a room with a single track
+    # doesn't pay a second round-trip on load.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_turns = pool.submit(
+            lambda: db.table("mad_turns")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("turn_index")
+            .execute()
+        )
+        f_single = pool.submit(
+            lambda: db.table("mad_single_turns")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("turn_index")
+            .execute()
+        )
+        turns = f_turns.result().data
+        single_turns = f_single.result().data
+    return {"session": session, "turns": turns, "single_turns": single_turns}
 
 
 @app.post("/api/sessions/{session_id}/next")
@@ -469,6 +486,213 @@ def add_steer_message(
         "speaker": "Moderator",
         "text": turn["text"],
     }
+
+
+# --- Single-model track (Phase 3) ---------------------------------------------
+# A parallel "just ask one strong model" baseline the user can open beside the
+# debate for comparison. Answers stream through the same path as debate turns;
+# the user steers it only via generated follow-up options, and the debate's
+# interventions are fanned in here too.
+
+
+def _insert_single_turn(db, row: dict) -> dict:
+    """Same turn_index collision healing as _insert_turn, for the single track.
+    The track is user-driven (one action at a time) so contention is rare, but
+    an intervention landing while an answer is mid-flight could still collide."""
+    for attempt in range(6):
+        try:
+            return db.table("mad_single_turns").insert(row).execute().data[0]
+        except APIError as e:
+            if getattr(e, "code", None) != "23505" or attempt == 5:
+                raise
+            count = (
+                db.table("mad_single_turns")
+                .select("id", count="exact")
+                .eq("session_id", row["session_id"])
+                .execute()
+                .count
+            )
+            row = {**row, "turn_index": count}
+
+
+def _stream_single_answer(session, user_id, credit_row, prior_turns, instruction, option_label, prelude=None):
+    """Stream one single-model answer (reusing the debate's streaming events),
+    persist it, generate the next follow-up options, and record spend. `prelude`
+    lets an intervention emit its interjection turn before the answer streams."""
+    db = get_db()
+    session_id = session["id"]
+    cfg = session.get("single_agent") or {}
+    agent = single_module.build_single_agent(
+        cfg.get("model") or single_module.DEFAULT_SINGLE_MODEL, cfg.get("use_search", True)
+    )
+    messages = single_module.build_single_messages(session["topic"], prior_turns, instruction)
+    turn_index = len(prior_turns)
+
+    def gen():
+        try:
+            for line in prelude or []:
+                yield line
+            final_text = None
+            cost = 0.0
+            sources = []
+            for event in agent.respond_streaming(messages):
+                et = event["type"]
+                if et == "token":
+                    yield json.dumps({"type": "token", "text": event["text"]}) + "\n"
+                elif et == "token_reset":
+                    yield json.dumps({"type": "token_reset"}) + "\n"
+                elif et == "tool_call" and event.get("name") == "web_search":
+                    yield json.dumps({"type": "search", "query": event["args"].get("query", "")}) + "\n"
+                elif et == "tool_result" and event.get("name") == "web_search":
+                    yield (
+                        json.dumps(
+                            {
+                                "type": "search_result",
+                                "query": event["query"],
+                                "result_count": event["result_count"],
+                                "titles": event["titles"],
+                            }
+                        )
+                        + "\n"
+                    )
+                elif et == "text":
+                    final_text = event["text"]
+                    cost = event["cost"]
+                    sources = event.get("sources", [])
+
+            # Generate the next options before persisting so they land on the
+            # turn row and survive a page reload.
+            options, opt_cost = single_module.generate_followups(
+                session["topic"],
+                session.get("agents"),
+                prior_turns + [{"role": "single", "text": final_text or ""}],
+            )
+            inserted = _insert_single_turn(
+                db,
+                {
+                    "session_id": session_id,
+                    "turn_index": turn_index,
+                    "role": "single",
+                    "text": final_text or "",
+                    "cost_usd": cost,
+                    "sources": sources,
+                    "option_label": option_label or None,
+                    "options": options or None,
+                },
+            )
+            total_spent = add_spend(user_id, cost + opt_cost, row=credit_row)
+            yield (
+                json.dumps(
+                    {
+                        "type": "single_turn",
+                        "turn_index": inserted["turn_index"],
+                        "role": "single",
+                        "text": final_text,
+                        "cost_usd": cost,
+                        "sources": sources,
+                        "option_label": option_label,
+                        "options": options,
+                        "total_spent_usd": total_spent,
+                    }
+                )
+                + "\n"
+            )
+        except Exception:
+            logger.exception("Error generating single-model answer for session %s", session_id)
+            yield (
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": (
+                            "Couldn't generate the single-model answer — the model may be "
+                            "unavailable right now. Please try again."
+                        ),
+                    }
+                )
+                + "\n"
+            )
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+def _single_ready(session_id, user_id):
+    session = _load_session(session_id, user_id)
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="Discussion has already ended")
+    credit_row = get_or_create_credit_row(user_id)
+    assert_within_budget(credit_row)
+    return session, credit_row
+
+
+@app.post("/api/sessions/{session_id}/single/start")
+def single_start(session_id: str, body: SingleStartRequest, user_id: str = Depends(get_current_user_id)):
+    session, credit_row = _single_ready(session_id, user_id)
+    db = get_db()
+    started = (
+        db.table("mad_single_turns").select("id", count="exact").eq("session_id", session_id).execute().count
+    )
+    if session.get("single_agent") and started:
+        raise HTTPException(status_code=400, detail="A single-model track is already running")
+    single_cfg = {"model": body.model, "use_search": body.use_search}
+    db.table("mad_sessions").update({"single_agent": single_cfg}).eq("id", session_id).execute()
+    session = {**session, "single_agent": single_cfg}
+    return _stream_single_answer(session, user_id, credit_row, [], None, None)
+
+
+@app.post("/api/sessions/{session_id}/single/next")
+def single_next(session_id: str, body: SingleNextRequest, user_id: str = Depends(get_current_user_id)):
+    session, credit_row = _single_ready(session_id, user_id)
+    if not session.get("single_agent"):
+        raise HTTPException(status_code=400, detail="No single-model track on this discussion")
+    prior = (
+        get_db().table("mad_single_turns").select("*").eq("session_id", session_id).order("turn_index").execute().data
+    )
+    return _stream_single_answer(session, user_id, credit_row, prior, body.instruction, body.label or None)
+
+
+@app.post("/api/sessions/{session_id}/single/intervene")
+def single_intervene(session_id: str, body: SingleInterveneRequest, user_id: str = Depends(get_current_user_id)):
+    session, credit_row = _single_ready(session_id, user_id)
+    if not session.get("single_agent"):
+        raise HTTPException(status_code=400, detail="No single-model track on this discussion")
+    db = get_db()
+    prior = db.table("mad_single_turns").select("*").eq("session_id", session_id).order("turn_index").execute().data
+    speaker = "Moderator" if body.kind == "human" else "Judge"
+    interjection = _insert_single_turn(
+        db,
+        {
+            "session_id": session_id,
+            "turn_index": len(prior),
+            "role": body.kind,
+            "text": body.text,
+            "cost_usd": 0,
+        },
+    )
+    prelude = [
+        json.dumps(
+            {
+                "type": "single_intervention",
+                "turn_index": interjection["turn_index"],
+                "role": body.kind,
+                "speaker": speaker,
+                "text": body.text,
+            }
+        )
+        + "\n"
+    ]
+    return _stream_single_answer(
+        session, user_id, credit_row, prior + [interjection], None, None, prelude=prelude
+    )
+
+
+@app.post("/api/sessions/{session_id}/comparison")
+def submit_comparison(session_id: str, body: ComparisonRequest, user_id: str = Depends(get_current_user_id)):
+    _load_session(session_id, user_id)  # ownership check
+    get_db().table("mad_comparisons").upsert(
+        {"session_id": session_id, "user_id": user_id, "preference": body.preference},
+        on_conflict="session_id,user_id",
+    ).execute()
+    return {"preference": body.preference}
 
 
 @app.patch("/api/sessions/{session_id}")

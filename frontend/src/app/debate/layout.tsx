@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Menu, MoreHorizontal } from "lucide-react";
+import { Menu, MoreHorizontal, PanelLeft, PanelLeftClose } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import {
   deleteSession,
@@ -37,6 +37,9 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [credits, setCredits] = useState<Credits | null>(null);
   const [navOpen, setNavOpen] = useState(false);
+  const [sidebarHover, setSidebarHover] = useState(false);
+  // Click-to-pin (via the visible toggle) is separate from hover-to-peek.
+  const [sidebarPinned, setSidebarPinned] = useState(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -76,9 +79,12 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
     return () => clearTimeout(retry);
   }, [checking, pathname]);
 
-  // Navigating (tapping a debate in the drawer) closes the drawer.
+  // Navigating (tapping a debate in the drawer) closes the drawer and un-pins
+  // the desktop sidebar, handing the full screen back to the discussion.
   useEffect(() => {
     setNavOpen(false);
+    setSidebarPinned(false);
+    setSidebarHover(false);
   }, [pathname]);
 
   useEffect(() => {
@@ -274,7 +280,47 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
         </Button>
       </header>
 
-      <aside className="hidden w-64 shrink-0 flex-col border-r p-4 md:flex">{sidebarContent}</aside>
+      {/* Inside a discussion the sidebar collapses to a slim rail with a
+          clearly visible toggle: hover the rail to peek, click the toggle to
+          pin it open. Either way the discussion keeps (almost) the whole
+          screen. On the compose/home screen the sidebar stays pinned open. */}
+      {pathname.startsWith("/debate/") ? (
+        <div
+          className="relative z-30 hidden shrink-0 md:block"
+          onMouseEnter={() => setSidebarHover(true)}
+          onMouseLeave={() => setSidebarHover(false)}
+        >
+          <div className="flex h-full w-11 flex-col items-center border-r pt-3">
+            <button
+              onClick={() => setSidebarPinned((v) => !v)}
+              aria-label={sidebarPinned ? "Collapse sidebar" : "Open sidebar"}
+              className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <PanelLeft className="h-5 w-5" />
+            </button>
+          </div>
+          <aside
+            className={`absolute left-0 top-0 flex h-full w-64 flex-col border-r bg-background p-4 shadow-2xl transition-transform duration-200 ${
+              sidebarHover || sidebarPinned ? "translate-x-0" : "-translate-x-full"
+            }`}
+          >
+            {sidebarPinned && (
+              <button
+                onClick={() => setSidebarPinned(false)}
+                aria-label="Collapse sidebar"
+                className="absolute right-2 top-2 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            )}
+            {sidebarContent}
+          </aside>
+        </div>
+      ) : (
+        <aside className="hidden w-64 shrink-0 flex-col border-r p-4 md:flex">
+          {sidebarContent}
+        </aside>
+      )}
 
       <Sheet open={navOpen} onOpenChange={setNavOpen}>
         <SheetContent side="left" className="w-72 gap-0 p-4">
