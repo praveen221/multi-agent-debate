@@ -7,6 +7,7 @@ import json
 import re
 
 from client import get_client
+from grounding import judge_grounding
 
 DIRECTIONS = {"converging", "diverging", "off_topic", "stalling", "balanced"}
 SUGGESTED_ACTIONS = {"none", "intervene", "pressure_test", "refocus", "conclude"}
@@ -139,6 +140,7 @@ def _call(model: str, system: str, user_content: str) -> tuple[str, float]:
     should make this rare, but it's a cheap backstop against whatever cause,
     reasoning-budget or otherwise."""
     client = get_client("openrouter")
+    system = f"{judge_grounding()}\n\n{system}"
 
     def _once():
         response = client.chat.completions.create(

@@ -1,5 +1,6 @@
 import tools
 from agent import Agent
+from grounding import date_grounding
 
 # The three interaction modes. A template (or a hand-set stance) picks which
 # base an agent gets — they are alternatives, not layers, because "you are
@@ -72,13 +73,14 @@ def build_agent(config: dict) -> Agent:
     entrypoints. A stance always wins: filling it in makes the agent an
     advocate no matter what mode says."""
     name = config["name"]
+    has_search = bool(config.get("use_search"))
     if config.get("stance"):
         base = BASE_ADVOCATE.replace("{stance}", config["stance"])
     elif config.get("mode") == "advise":
         base = BASE_ADVISE
     else:
         base = BASE_DISCUSS
-    persona = f"You are {name}. " + base
+    persona = f"You are {name}. " + base + " " + date_grounding(has_search)
     if config.get("persona"):
         persona += (
             f' The user has asked you to take on this personality: "{config["persona"]}". '
@@ -88,7 +90,7 @@ def build_agent(config: dict) -> Agent:
         )
     agent_tools = None
     tool_executor = None
-    if config.get("use_search"):
+    if has_search:
         persona += " Use the web_search tool when it would help ground a claim in real evidence."
         agent_tools = [tools.WEB_SEARCH_TOOL]
         tool_executor = make_tool_executor(name)
