@@ -1,10 +1,13 @@
-// Two overlapping speech shapes, monochrome per the xAI-derived system —
-// white ink over near-black, the back shape in canvas-mid.
+// Two overlapping speech shapes, monochrome per the xAI-derived system: an ink
+// front shape over a muted back shape. Both fills are theme tokens so the mark
+// inverts correctly — white ink / dark-grey back on the near-black canvas, and
+// near-black ink / light-grey back on the white one (a hardcoded white front
+// vanished on the light background).
 function LogoMark({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <rect x="3" y="6" width="20" height="14" rx="5" fill="#363a3f" />
-      <rect x="9" y="12" width="20" height="14" rx="5" fill="#ffffff" />
+      <rect x="3" y="6" width="20" height="14" rx="5" fill="var(--input)" />
+      <rect x="9" y="12" width="20" height="14" rx="5" fill="var(--foreground)" />
     </svg>
   );
 }

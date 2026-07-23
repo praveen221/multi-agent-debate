@@ -51,8 +51,10 @@
 }
 
 /* xAI-derived palette (see DESIGN.md): near-black canvas, white ink, hairline
-   borders, no shadows. The app is dark-only — :root and .dark are identical
-   so the forced dark class and any dark: utilities behave consistently. */
+   borders, no shadows. Dark is the default (:root) and the brand's primary
+   look; .light is an opt-in via the theme toggle. Because :root and .light
+   have equal specificity, .light is placed AFTER and wins when its class is on
+   <html>; with no JS the page stays dark. */
 :root,
 .dark {
   --background: #0a0a0a;
@@ -87,6 +89,43 @@
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: #212327;
   --sidebar-ring: #7d8187;
+}
+
+/* Light mode: white canvas, near-black ink, soft grey hairlines. The xAI
+   accent hues (chart-*) are nudged a shade deeper where the dark-tuned tint
+   would wash out on white (blue/amber/violet), so identity colors stay legible. */
+.light {
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #f7f7f8;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f0f2;
+  --secondary-foreground: #1a1c20;
+  --muted: #f2f2f4;
+  --muted-foreground: #63676d;
+  --accent: #f0f0f2;
+  --accent-foreground: #0a0a0a;
+  --destructive: #dc2626;
+  --border: #e4e4e7;
+  --input: #d4d4d8;
+  --ring: #a1a1aa;
+  --chart-1: #ff7a17;
+  --chart-2: #7c3aed;
+  --chart-3: #4a86c9;
+  --chart-4: #cc7a1a;
+  --chart-5: #7c5fd0;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #0a0a0a;
+  --sidebar-primary: #0a0a0a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f0f0f2;
+  --sidebar-accent-foreground: #0a0a0a;
+  --sidebar-border: #e4e4e7;
+  --sidebar-ring: #a1a1aa;
 }
 
 @layer base {

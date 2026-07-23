@@ -57,7 +57,7 @@ export function RatingPrompt({
       <button
         onClick={dismiss}
         aria-label="Dismiss"
-        className="absolute right-3 top-3 rounded p-1 text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+        className="absolute right-3 top-3 rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
       >
         <X className="h-4 w-4" />
       </button>

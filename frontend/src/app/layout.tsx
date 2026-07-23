@@ -43,8 +43,14 @@ export default function RootLayout({
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        {/* Dark-canvas only, per the xAI-derived design system. */}
-        <ThemeProvider attribute="class" forcedTheme="dark">
+        {/* Light is the default now; dark is a toggle away. enableSystem off so
+            this explicit default wins until the user chooses. */}
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="light"
+          enableSystem={false}
+          disableTransitionOnChange
+        >
           {children}
         </ThemeProvider>
       </body>

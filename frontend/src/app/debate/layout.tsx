@@ -29,6 +29,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { FeedbackDialog } from "@/components/feedback-dialog";
 import { MadWorldLogo } from "@/components/mad-world-logo";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export default function DebateLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -221,7 +222,7 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
                 <PopoverContent align="start" side="right" className="w-28 p-1">
                   <button
                     onClick={() => startRename(s)}
-                    className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-white/10"
+                    className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-foreground/10"
                   >
                     Rename
                   </button>
@@ -230,7 +231,7 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
                       setMenuFor(null);
                       setDeleteTarget(s);
                     }}
-                    className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-white/10"
+                    className="block w-full rounded-md px-2.5 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-foreground/10"
                   >
                     Delete
                   </button>
@@ -251,13 +252,16 @@ export default function DebateLayout({ children }: { children: React.ReactNode }
         <Button variant="ghost" size="sm" onClick={handleSignOut}>
           Sign out
         </Button>
-        <FeedbackDialog
-          trigger={
-            <Button variant="ghost" size="sm" className="text-muted-foreground">
-              Feedback
-            </Button>
-          }
-        />
+        <div className="flex items-center gap-1">
+          <FeedbackDialog
+            trigger={
+              <Button variant="ghost" size="sm" className="text-muted-foreground">
+                Feedback
+              </Button>
+            }
+          />
+          <ThemeToggle />
+        </div>
       </div>
     </>
   );

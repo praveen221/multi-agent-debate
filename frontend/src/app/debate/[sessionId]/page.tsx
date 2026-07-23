@@ -82,11 +82,11 @@ const DIRECTION_LABELS: Record<string, string> = {
 // Direction is genuinely semantic (agreeing vs. not) — a restrained tint here
 // earns its keep even though the brand otherwise stays monochrome.
 const DIRECTION_STYLES: Record<string, string> = {
-  converging: "border-emerald-400/40 text-emerald-300/90",
-  balanced: "border-emerald-400/40 text-emerald-300/90",
-  diverging: "border-amber-400/40 text-amber-300/90",
-  off_topic: "border-amber-400/40 text-amber-300/90",
-  stalling: "border-amber-400/40 text-amber-300/90",
+  converging: "border-emerald-500/40 text-emerald-700 dark:text-emerald-300/90",
+  balanced: "border-emerald-500/40 text-emerald-700 dark:text-emerald-300/90",
+  diverging: "border-amber-500/40 text-amber-700 dark:text-amber-300/90",
+  off_topic: "border-amber-500/40 text-amber-700 dark:text-amber-300/90",
+  stalling: "border-amber-500/40 text-amber-700 dark:text-amber-300/90",
 };
 
 const JUDGE_ACTIONS = [
@@ -99,7 +99,7 @@ const JUDGE_ACTIONS = [
 // border so the identity reads through the accent — no filled avatar chip,
 // which looked like a mascot next to the app's otherwise hairline chrome.
 function JudgeBadge() {
-  return <Scale className="h-3.5 w-3.5 shrink-0 text-[#c4b5fd]" />;
+  return <Scale className="h-3.5 w-3.5 shrink-0 text-[#7c3aed] dark:text-[#c4b5fd]" />;
 }
 
 
@@ -734,14 +734,25 @@ export default function DebateSessionPage() {
             )}
             {intake?.resolved && intake.interpretation && (
               <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                <span className="font-mono text-[10px] uppercase tracking-wide text-[#ffc285]">
+                <span className="font-mono text-[10px] uppercase tracking-wide text-[#b45309] dark:text-[#ffc285]">
                   Interpreted as
                 </span>{" "}
                 <span className="text-foreground/90">{intake.interpretation}</span>
-                {" · "}
-                <Link href="/debate" className="underline underline-offset-2 hover:text-foreground">
-                  not right?
-                </Link>
+                {/* Correcting the interpretation only makes sense before the
+                    debate has invested in it — once round 1 is done the agents
+                    have already argued this reading, so drop the link. Clicking
+                    it starts fresh with the original words pre-filled. */}
+                {agents.length > 0 && agentTurnCount(turns) < agents.length && (
+                  <>
+                    {" · "}
+                    <Link
+                      href={`/debate?prompt=${encodeURIComponent(subject)}`}
+                      className="underline underline-offset-2 hover:text-foreground"
+                    >
+                      not right?
+                    </Link>
+                  </>
+                )}
               </p>
             )}
           </div>
@@ -756,7 +767,7 @@ export default function DebateSessionPage() {
                         ? "This discussion has a public link"
                         : "Share this discussion publicly"
                     }
-                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors hover:bg-white/5 ${
+                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors hover:bg-foreground/5 ${
                       shareId ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
@@ -952,7 +963,7 @@ export default function DebateSessionPage() {
                       <div className="space-y-4">
                         {(turn.verdict?.agreements?.length ?? 0) > 0 && (
                           <div className="border-l-2 border-emerald-400/50 pl-3">
-                            <p className="mb-1.5 font-mono text-xs uppercase tracking-widest text-emerald-400/90">
+                            <p className="mb-1.5 font-mono text-xs uppercase tracking-widest text-emerald-700 dark:text-emerald-400/90">
                               Agreed on
                             </p>
                             <ul className="space-y-1.5">
@@ -966,7 +977,7 @@ export default function DebateSessionPage() {
                         )}
                         {(turn.verdict?.contentions?.length ?? 0) > 0 && (
                           <div className="border-l-2 border-amber-400/50 pl-3">
-                            <p className="mb-1.5 font-mono text-xs uppercase tracking-widest text-amber-400/90">
+                            <p className="mb-1.5 font-mono text-xs uppercase tracking-widest text-amber-700 dark:text-amber-400/90">
                               Still contested
                             </p>
                             <ul className="space-y-1.5">

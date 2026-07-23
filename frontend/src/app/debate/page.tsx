@@ -68,6 +68,17 @@ export default function NewDebatePage() {
       .catch(() => {});
   }, []);
 
+  // Pre-fill from a "?prompt=" hand-off — e.g. the room's "not right?" link,
+  // which sends you here with your original words to correct. Read from the URL
+  // directly (not useSearchParams) to avoid a Suspense de-opt on this page.
+  useEffect(() => {
+    const prompt = new URLSearchParams(window.location.search).get("prompt");
+    if (prompt) {
+      setTopic(prompt);
+      requestAnimationFrame(() => topicRef.current?.focus());
+    }
+  }, []);
+
   function updateAgent(i: number, patch: Partial<AgentDraft>) {
     setAgents((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
   }

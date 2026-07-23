@@ -88,7 +88,7 @@ export function SingleTrack({
               className="rounded-xl border border-[#c4b5fd]/30 bg-muted/40 px-4 py-3"
             >
               <p className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
-                <Scale className="h-3.5 w-3.5 text-[#c4b5fd]" /> Challenge
+                <Scale className="h-3.5 w-3.5 text-[#7c3aed] dark:text-[#c4b5fd]" /> Challenge
               </p>
               <div className="mt-2">
                 <TurnMarkdown text={t.text} />

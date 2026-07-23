@@ -31,7 +31,7 @@ export function ReportCard({ turn }: { turn: Turn }) {
     <div className="w-full pl-11">
       <div className="judge-comet rounded-xl border bg-muted/40 px-5 py-4">
         <p className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          <Scale className="h-3.5 w-3.5 shrink-0 text-[#c4b5fd]" />
+          <Scale className="h-3.5 w-3.5 shrink-0 text-[#7c3aed] dark:text-[#c4b5fd]" />
           Closing report
         </p>
 
