@@ -12,6 +12,7 @@ load_dotenv()
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from postgrest.exceptions import APIError
 
 import agent_factory
 import judge as judge_module
@@ -144,6 +145,33 @@ def list_sessions(user_id: str = Depends(get_current_user_id)):
     ]
 
 
+def _insert_turn(db, row: dict) -> dict:
+    """Insert a turn, healing a turn_index collision. The index is picked from
+    a read that can be stale by write time — a human steer message can slip in
+    at the same index while a turn is being produced, and the duplicate-key
+    crash that causes is exactly what stranded a real session (the reply saved
+    fine, then the insert 23505'd and the whole turn was lost). On a unique
+    violation, re-read the current end of the transcript and insert there.
+    For turns that must always land: the human steer message and the judge's
+    remark. The agent-turn path handles a collision differently (see
+    next_turn) — its reply is now stale, so it's dropped and the page resyncs
+    rather than landing out of order."""
+    for attempt in range(6):
+        try:
+            return db.table("mad_turns").insert(row).execute().data[0]
+        except APIError as e:
+            if getattr(e, "code", None) != "23505" or attempt == 5:
+                raise
+            count = (
+                db.table("mad_turns")
+                .select("id", count="exact")
+                .eq("session_id", row["session_id"])
+                .execute()
+                .count
+            )
+            row = {**row, "turn_index": count}
+
+
 def _load_session(session_id: str, user_id: str) -> dict:
     db = get_db()
     result = db.table("mad_sessions").select("*").eq("id", session_id).maybe_single().execute()
@@ -261,17 +289,44 @@ def next_turn(
                     cost = event["cost"]
                     sources = event.get("sources", [])
 
-            db.table("mad_turns").insert(
-                {
-                    "session_id": session_id,
-                    "turn_index": turn_index,
-                    "role": "agent",
-                    "speaker": next_agent.name,
-                    "text": final_text,
-                    "cost_usd": cost,
-                    "sources": sources,
-                }
-            ).execute()
+            try:
+                db.table("mad_turns").insert(
+                    {
+                        "session_id": session_id,
+                        "turn_index": turn_index,
+                        "role": "agent",
+                        "speaker": next_agent.name,
+                        "text": final_text,
+                        "cost_usd": cost,
+                        "sources": sources,
+                    }
+                ).execute()
+            except APIError as e:
+                if getattr(e, "code", None) != "23505":
+                    raise
+                # A human steer message (or another turn) claimed this index
+                # while the reply was still being written, so the reply is
+                # stale — it never saw what arrived. Drop it, don't bill for
+                # it, and tell the page to resync (the same out-of-sync
+                # recovery as the pre-flight 409); the next turn is generated
+                # against the updated transcript and responds to the steer.
+                logger.info(
+                    "Turn %s superseded mid-generation for session %s", turn_index, session_id
+                )
+                yield (
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": (
+                                "A new message came in while this turn was being written, so "
+                                "it's out of sync. The page has been refreshed — continue when "
+                                "you're ready."
+                            ),
+                        }
+                    )
+                    + "\n"
+                )
+                return
             total_spent = add_spend(user_id, cost, row=credit_row)
             yield (
                 json.dumps(
@@ -322,21 +377,17 @@ def add_steer_message(
         .execute()
         .count
     )
-    result = (
-        db.table("mad_turns")
-        .insert(
-            {
-                "session_id": session_id,
-                "turn_index": turn_index,
-                "role": "human",
-                "speaker": "Moderator",
-                "text": body.text,
-                "cost_usd": 0,
-            }
-        )
-        .execute()
+    turn = _insert_turn(
+        db,
+        {
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "role": "human",
+            "speaker": "Moderator",
+            "text": body.text,
+            "cost_usd": 0,
+        },
     )
-    turn = result.data[0]
     return {
         "turn_index": turn["turn_index"],
         "role": "human",
@@ -436,7 +487,8 @@ def judge_action(
         text, verdict, cost = judge_module.run_report(
             model, session["topic"], transcript, agents=session["agents"]
         )
-        db.table("mad_turns").insert(
+        inserted = _insert_turn(
+            db,
             {
                 "session_id": session_id,
                 "turn_index": turn_index,
@@ -445,11 +497,11 @@ def judge_action(
                 "text": text,
                 "cost_usd": cost,
                 "verdict": verdict,
-            }
-        ).execute()
+            },
+        )
         add_spend(user_id, cost)
         return {
-            "turn_index": turn_index,
+            "turn_index": inserted["turn_index"],
             "role": "judge",
             "speaker": "Judge",
             "text": text,
@@ -490,7 +542,8 @@ def judge_action(
             )
             verdict = {"kind": "intervention", "action": body.action}
 
-    db.table("mad_turns").insert(
+    inserted = _insert_turn(
+        db,
         {
             "session_id": session_id,
             "turn_index": turn_index,
@@ -499,13 +552,13 @@ def judge_action(
             "text": text,
             "cost_usd": cost,
             "verdict": verdict,
-        }
-    ).execute()
+        },
+    )
     if cost:
         add_spend(user_id, cost)
 
     return {
-        "turn_index": turn_index,
+        "turn_index": inserted["turn_index"],
         "role": "judge",
         "speaker": "Judge",
         "text": text,
