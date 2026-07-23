@@ -19,6 +19,25 @@ class JudgeConfig(BaseModel):
     model: str
 
 
+class ConciergeRequest(BaseModel):
+    # The raw prompt the user typed, and which room type they were setting up —
+    # the concierge is template-aware (a bare topic in an advocate room should
+    # be clarified into a proposition; an advise room needs a concrete idea).
+    prompt: str = Field(min_length=1, max_length=2000)
+    template_label: str | None = Field(default=None, max_length=60)
+    mode: Literal["discuss", "advocate", "advise"] = "discuss"
+
+
+class IntakeInfo(BaseModel):
+    # Links a created room back to the concierge interaction that produced it.
+    # intake_id ties the mad_intake row to this session; interpretation/resolved
+    # are denormalized onto the session so the room can show its framing banner
+    # without a second read.
+    intake_id: str | None = None
+    interpretation: str | None = Field(default=None, max_length=1000)
+    resolved: bool = False
+
+
 class CreateSessionRequest(BaseModel):
     topic: str
     agents: list[AgentConfig]
@@ -29,6 +48,7 @@ class CreateSessionRequest(BaseModel):
     # open-discussion template (no composition) can omit it.
     subject: str | None = Field(default=None, max_length=2000)
     template_label: str | None = Field(default=None, max_length=60)
+    intake: IntakeInfo | None = None
 
 
 class UpdateSessionRequest(BaseModel):

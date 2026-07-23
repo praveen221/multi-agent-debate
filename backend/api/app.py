@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from postgrest.exceptions import APIError
 
 import agent_factory
+import concierge as concierge_module
 import judge as judge_module
 import models as models_module
 import titles as titles_module
@@ -29,6 +30,7 @@ from api.credits import (
 )
 from api.db import get_db
 from api.schemas import (
+    ConciergeRequest,
     CreateSessionRequest,
     FeedbackRequest,
     JudgeActionRequest,
@@ -93,6 +95,56 @@ def _generate_and_store_title(session_id: str, topic: str, user_id: str) -> None
         add_spend(user_id, cost)
 
 
+@app.post("/api/concierge")
+def concierge_intake(body: ConciergeRequest, user_id: str = Depends(get_current_user_id)):
+    """Pre-discussion intake. Reads the raw prompt and routes it: open a room
+    (discuss), ask one clarifying question (clarify), or answer inline without a
+    room (answer). Every interaction is persisted to mad_intake — including the
+    answers and clarifications that never become a room — so they can be
+    surfaced back to the user. Cheap (~$0.001) but real spend, so it checks the
+    budget and records what it costs, same as any other model call."""
+    credit_row = get_or_create_credit_row(user_id)
+    assert_within_budget(credit_row)
+
+    decision, cost, sources = concierge_module.run_concierge(
+        body.prompt, body.template_label, body.mode
+    )
+
+    db = get_db()
+    row = (
+        db.table("mad_intake")
+        .insert(
+            {
+                "user_id": user_id,
+                "prompt": body.prompt,
+                "template_label": body.template_label,
+                "mode": body.mode,
+                "decision": decision["decision"],
+                "interpretation": decision["interpretation"] or None,
+                "resolved": decision["resolved"],
+                "refined_input": decision["refined_input"] or None,
+                "clarify": decision["clarify"],
+                "answer": decision["answer"] or None,
+                "sources": sources or None,
+                "cost_usd": cost,
+            }
+        )
+        .execute()
+        .data[0]
+    )
+    add_spend(user_id, cost, row=credit_row)
+
+    return {
+        "intake_id": row["id"],
+        "decision": decision["decision"],
+        "interpretation": decision["interpretation"],
+        "resolved": decision["resolved"],
+        "refined_input": decision["refined_input"],
+        "clarify": decision["clarify"],
+        "answer": decision["answer"],
+    }
+
+
 @app.post("/api/sessions")
 def create_session(
     body: CreateSessionRequest,
@@ -101,6 +153,7 @@ def create_session(
 ):
     check_within_budget(user_id)
     db = get_db()
+    intake = body.intake
     result = (
         db.table("mad_sessions")
         .insert(
@@ -112,11 +165,33 @@ def create_session(
                 "agents": [a.model_dump() for a in body.agents],
                 "judge": body.judge.model_dump() if body.judge else None,
                 "status": "active",
+                # Denormalized banner data — only when the concierge resolved
+                # something worth showing ("interpreted as the July 2026 strikes").
+                "intake": (
+                    {"interpretation": intake.interpretation, "resolved": intake.resolved}
+                    if intake and intake.resolved and intake.interpretation
+                    else None
+                ),
             }
         )
         .execute()
     )
     session = result.data[0]
+
+    # Tie the concierge interaction to the room it produced (best-effort — a
+    # failed link must never sink a successful room creation).
+    if intake and intake.intake_id:
+        try:
+            (
+                db.table("mad_intake")
+                .update({"session_id": session["id"]})
+                .eq("id", intake.intake_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+        except APIError:
+            logger.warning("Could not link intake %s to session %s", intake.intake_id, session["id"])
+
     background_tasks.add_task(_generate_and_store_title, session["id"], body.topic, user_id)
     return {"session_id": session["id"], "topic": session["topic"], "agents": session["agents"]}
 

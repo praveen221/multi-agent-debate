@@ -88,6 +88,7 @@ export type SessionDetail = {
     agents: AgentDraft[];
     judge?: JudgeConfig | null;
     share_id?: string | null;
+    intake?: { interpretation: string; resolved: boolean } | null;
   };
   turns: Turn[];
 };
@@ -131,12 +132,36 @@ export function getCredits(): Promise<Credits> {
   return apiFetch("/api/credits");
 }
 
+export type ClarifyOption = { label: string; refined_input: string };
+export type ConciergeResult = {
+  intake_id: string;
+  decision: "discuss" | "clarify" | "answer";
+  interpretation: string;
+  resolved: boolean;
+  refined_input: string;
+  clarify: { question: string; options: ClarifyOption[] } | null;
+  answer: string;
+};
+export type IntakeLink = { intake_id: string; interpretation: string; resolved: boolean };
+
+export function runConcierge(
+  prompt: string,
+  templateLabel: string | null,
+  mode: AgentMode,
+): Promise<ConciergeResult> {
+  return apiFetch("/api/concierge", {
+    method: "POST",
+    body: JSON.stringify({ prompt, template_label: templateLabel, mode }),
+  });
+}
+
 export function createSession(
   topic: string,
   agents: AgentDraft[],
   judge?: JudgeConfig,
   subject?: string,
   templateLabel?: string | null,
+  intake?: IntakeLink,
 ) {
   return apiFetch("/api/sessions", {
     method: "POST",
@@ -146,6 +171,7 @@ export function createSession(
       judge,
       subject,
       template_label: templateLabel,
+      intake,
     }),
   }) as Promise<{ session_id: string; topic: string; agents: AgentDraft[] }>;
 }

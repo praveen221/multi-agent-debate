@@ -96,6 +96,9 @@ export default function DebateSessionPage() {
   const [topic, setTopic] = useState("");
   const [subject, setSubject] = useState("");
   const [templateLabel, setTemplateLabel] = useState<string | null>(null);
+  // The concierge's read of the prompt, shown as a correctable framing line —
+  // only present when it resolved something implicit (a date, which event).
+  const [intake, setIntake] = useState<{ interpretation: string; resolved: boolean } | null>(null);
   const [status, setStatus] = useState("active");
   const [turns, setTurns] = useState<Turn[]>([]);
   type SearchEntry = { query: string; done: boolean; titles: string[]; resultCount: number };
@@ -137,6 +140,7 @@ export default function DebateSessionPage() {
         // Old sessions predate this column — fall back to the full topic.
         setSubject(session.subject || session.topic);
         setTemplateLabel(session.template_label || null);
+        setIntake(session.intake ?? null);
         setStatus(session.status);
         setTurns(turns);
         setAgents(session.agents);
@@ -575,6 +579,18 @@ export default function DebateSessionPage() {
               <h1 ref={topicRef} className="mt-1 line-clamp-2 max-w-2xl text-xl leading-snug">
                 {subject}
               </h1>
+            )}
+            {intake?.resolved && intake.interpretation && (
+              <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-foreground">
+                <span className="font-mono text-[10px] uppercase tracking-wide text-[#ffc285]">
+                  Interpreted as
+                </span>{" "}
+                <span className="text-foreground/90">{intake.interpretation}</span>
+                {" · "}
+                <a href="/debate" className="underline underline-offset-2 hover:text-foreground">
+                  not right?
+                </a>
+              </p>
             )}
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 sm:flex-col sm:items-end sm:gap-2.5">

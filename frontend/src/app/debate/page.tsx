@@ -2,12 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUp, Scale, Settings2 } from "lucide-react";
+import { ArrowUp, Loader2, Scale, Settings2 } from "lucide-react";
 import {
   listModels,
   createSession,
+  runConcierge,
   ApiError,
   type AgentDraft,
+  type AgentMode,
+  type ClarifyOption,
+  type ConciergeResult,
+  type IntakeLink,
   type JudgeConfig,
   type ModelInfo,
 } from "@/lib/api";
@@ -48,7 +53,12 @@ export default function NewDebatePage() {
   // Which stance fields the user has hand-edited — those stop live-syncing
   // with the template composition. Clearing a field hands it back.
   const stanceEditedRef = useRef<boolean[]>([]);
-  const [loading, setLoading] = useState(false);
+  // The intake flow: compose -> concierge "thinking" -> either the room opens,
+  // or a clarify card / inline answer is shown. Editing the prompt drops back
+  // to compose (see the topic onChange).
+  const [phase, setPhase] = useState<"compose" | "thinking" | "clarify" | "answer">("compose");
+  const [concierge, setConcierge] = useState<ConciergeResult | null>(null);
+  const [otherInput, setOtherInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [budgetExceeded, setBudgetExceeded] = useState(false);
 
@@ -123,6 +133,14 @@ export default function NewDebatePage() {
   const configValid = !hasDuplicateNames && !hasEmptyName && !hasEmptyModel && !judgeInvalid;
   const canStart = configValid && !hasEmptyTopic;
 
+  // What kind of room this is, for the concierge — an advocate room clarifies a
+  // bare topic into a proposition, an advise room needs a concrete idea.
+  const roomMode: AgentMode = agents.some((a) => a.mode === "advocate" || a.stance)
+    ? "advocate"
+    : agents.length > 0 && agents.every((a) => a.mode === "advise")
+      ? "advise"
+      : "discuss";
+
   const summary =
     agents.length > 0
       ? agents
@@ -131,34 +149,98 @@ export default function NewDebatePage() {
           .join(agents.length === 2 ? " vs " : ", ")
       : "";
 
+  function handleStartError(e: unknown) {
+    if (e instanceof ApiError && e.status === 402) setBudgetExceeded(true);
+    setError((e as Error).message);
+    setPhase("compose");
+  }
+
+  // Compose the chosen input into the room's real topic/stances (unchanged from
+  // before the concierge) and open it. `subject` is what the user sees in the
+  // header; `composeInput` is what the template wraps into the agents' topic.
+  async function openRoom(composeInput: string, subject: string, intake?: IntakeLink) {
+    const finalTopic = activeTemplate.composeTopic
+      ? activeTemplate.composeTopic(composeInput)
+      : composeInput;
+    const stances = activeTemplate.composeStances?.(composeInput) ?? [];
+    // Hand-written stances in the config sheet always win over composition.
+    const finalAgents = agents.map((a, i) =>
+      !a.stance && stances[i] ? { ...a, stance: stances[i] } : a,
+    );
+    const res = await createSession(
+      finalTopic,
+      finalAgents,
+      judge,
+      subject,
+      activeTemplate.id === "open" ? null : activeTemplate.label,
+      intake,
+    );
+    router.push(`/debate/${res.session_id}`);
+  }
+
   async function startDebate() {
-    if (!canStart) return;
+    if (!canStart || phase === "thinking") return;
     setError(null);
-    setLoading(true);
+    setBudgetExceeded(false);
+    setPhase("thinking");
+    const input = topic.trim();
+
+    let result: ConciergeResult | null = null;
     try {
-      const input = topic.trim();
-      const finalTopic = activeTemplate.composeTopic ? activeTemplate.composeTopic(input) : input;
-      const stances = activeTemplate.composeStances?.(input) ?? [];
-      // Composed stances carry the user's actual subject; hand-written
-      // stances in the config sheet always win over composition.
-      const finalAgents = agents.map((a, i) =>
-        !a.stance && stances[i] ? { ...a, stance: stances[i] } : a,
-      );
-      const res = await createSession(
-        finalTopic,
-        finalAgents,
-        judge,
-        input,
-        activeTemplate.id === "open" ? null : activeTemplate.label,
-      );
-      router.push(`/debate/${res.session_id}`);
+      result = await runConcierge(input, activeTemplate.id === "open" ? null : activeTemplate.label, roomMode);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 402) {
-        setBudgetExceeded(true);
-      }
-      setError((e as Error).message);
-      setLoading(false);
+      // Out of budget is terminal; any other concierge failure just falls
+      // through to opening the room the old way — intake never blocks a debate.
+      if (e instanceof ApiError && e.status === 402) return handleStartError(e);
+      result = null;
     }
+
+    try {
+      if (result?.decision === "clarify" && result.clarify) {
+        setConcierge(result);
+        setPhase("clarify");
+      } else if (result?.decision === "answer") {
+        setConcierge(result);
+        setPhase("answer");
+      } else if (result?.decision === "discuss") {
+        await openRoom(result.refined_input, input, {
+          intake_id: result.intake_id,
+          interpretation: result.interpretation,
+          resolved: result.resolved,
+        });
+      } else {
+        await openRoom(input, input); // concierge unavailable — today's behavior
+      }
+    } catch (e) {
+      handleStartError(e);
+    }
+  }
+
+  // Every path out of a clarify/answer card ends here: open the room from a
+  // chosen input, still linked to the intake row that produced it.
+  async function openFromIntake(composeInput: string, subject: string) {
+    setError(null);
+    setPhase("thinking");
+    try {
+      await openRoom(composeInput, subject, concierge ? { intake_id: concierge.intake_id, interpretation: "", resolved: false } : undefined);
+    } catch (e) {
+      handleStartError(e);
+    }
+  }
+
+  function chooseOption(o: ClarifyOption) {
+    openFromIntake(o.refined_input, o.refined_input);
+  }
+
+  function submitOther() {
+    const v = otherInput.trim();
+    if (v) openFromIntake(v, v);
+  }
+
+  function resetToCompose() {
+    setPhase("compose");
+    setConcierge(null);
+    setOtherInput("");
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -178,7 +260,10 @@ export default function NewDebatePage() {
             ref={topicRef}
             placeholder={activeTemplate.placeholder}
             value={topic}
-            onChange={(e) => setTopic(e.target.value)}
+            onChange={(e) => {
+              setTopic(e.target.value);
+              if (phase !== "compose") resetToCompose();
+            }}
             onKeyDown={handleKeyDown}
             rows={3}
             autoFocus
@@ -206,36 +291,130 @@ export default function NewDebatePage() {
             <InputGroupButton
               variant="default"
               size="icon-sm"
-              disabled={loading || !canStart || budgetExceeded}
+              disabled={phase === "thinking" || !canStart || budgetExceeded}
               onClick={startDebate}
               aria-label="Start discussion"
             >
-              <ArrowUp className="h-4 w-4" />
+              {phase === "thinking" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowUp className="h-4 w-4" />
+              )}
             </InputGroupButton>
           </InputGroupAddon>
         </InputGroup>
 
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {TEMPLATES.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => applyTemplate(t)}
-              title={t.label}
-              className={`truncate rounded-full border px-3 py-1.5 text-center text-xs transition-colors ${
-                templateId === t.id
-                  ? "border-foreground text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        {phase === "compose" && (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => applyTemplate(t)}
+                  title={t.label}
+                  className={`truncate rounded-full border px-3 py-1.5 text-center text-xs transition-colors ${
+                    templateId === t.id
+                      ? "border-foreground text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
 
-        {activeTemplate.composeTopic && topic.trim() && (
-          <p className="mt-2 truncate text-center text-xs text-muted-foreground">
-            Will start: &ldquo;{activeTemplate.composeTopic(topic.trim())}&rdquo;
-          </p>
+            {activeTemplate.composeTopic && topic.trim() && (
+              <p className="mt-2 truncate text-center text-xs text-muted-foreground">
+                Will start: &ldquo;{activeTemplate.composeTopic(topic.trim())}&rdquo;
+              </p>
+            )}
+          </>
+        )}
+
+        {phase === "thinking" && (
+          <div className="mt-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Reading your prompt&hellip;
+          </div>
+        )}
+
+        {phase === "clarify" && concierge?.clarify && (
+          <Card className="mt-4">
+            <CardContent className="space-y-3 pt-6">
+              <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                A quick check
+              </p>
+              <p className="text-base text-foreground">{concierge.clarify.question}</p>
+              <div className="space-y-2">
+                {concierge.clarify.options.map((o, i) => (
+                  <button
+                    key={i}
+                    onClick={() => chooseOption(o)}
+                    className="w-full rounded-lg border px-3.5 py-2.5 text-left text-sm text-foreground transition-colors hover:border-foreground"
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <Input
+                  value={otherInput}
+                  onChange={(e) => setOtherInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitOther();
+                    }
+                  }}
+                  placeholder="Something else — type your own…"
+                  className="flex-1"
+                />
+                <Button variant="outline" size="sm" onClick={submitOther} disabled={!otherInput.trim()}>
+                  Use this
+                </Button>
+              </div>
+              <button
+                onClick={() => openFromIntake(topic.trim(), topic.trim())}
+                className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Just start with what I typed
+              </button>
+            </CardContent>
+          </Card>
+        )}
+
+        {phase === "answer" && concierge && (
+          <Card className="mt-4">
+            <CardContent className="space-y-3 pt-6">
+              <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                Quick answer
+              </p>
+              <p className="whitespace-pre-wrap text-base text-foreground">{concierge.answer}</p>
+              <p className="text-sm text-muted-foreground">
+                That&rsquo;s a quick one — but I&rsquo;m built for something richer. Want a real
+                back-and-forth on it?
+              </p>
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openFromIntake(topic.trim(), topic.trim())}
+                >
+                  Discuss this anyway
+                </Button>
+                <button
+                  onClick={() => {
+                    resetToCompose();
+                    setTopic("");
+                    requestAnimationFrame(() => topicRef.current?.focus());
+                  }}
+                  className="text-sm text-muted-foreground hover:text-foreground"
+                >
+                  Ask something else
+                </button>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {budgetExceeded ? (
